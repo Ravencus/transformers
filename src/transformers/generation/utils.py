@@ -1554,6 +1554,7 @@ class GenerationMixin:
                 logits_processor=logits_processor,
                 model_kwargs=model_kwargs,
             )
+            
 
             # 12. run assisted generate
             result = self._assisted_decoding(
