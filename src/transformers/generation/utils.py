@@ -14,11 +14,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import time # 8803 profiler
+
+
+
 import copy
 import inspect
 import warnings
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, Union
+
+
+
 
 import torch
 import torch.distributed as dist
@@ -691,6 +698,7 @@ class GenerationMixin:
         """
         Returns the candidate generator to be used in `assisted_generation`
         """
+
         if generation_config.prompt_lookup_num_tokens is not None:
             candidate_generator = PromptLookupCandidateGenerator(
                 num_output_tokens=generation_config.prompt_lookup_num_tokens,
@@ -1293,6 +1301,7 @@ class GenerationMixin:
         streamer: Optional["BaseStreamer"] = None,
         negative_prompt_ids: Optional[torch.Tensor] = None,
         negative_prompt_attention_mask: Optional[torch.Tensor] = None,
+        secondary_assistant_model: Optional["PreTrainedModel"] = None, # 8803 staged feature
         **kwargs,
     ) -> Union[GenerateOutput, torch.LongTensor]:
         r"""
@@ -1379,6 +1388,7 @@ class GenerationMixin:
                     - [`~generation.GenerateBeamEncoderDecoderOutput`]
         """
         # 1. Handle `generation_config` and kwargs that might update it, and validate the `.generate()` call
+
         self._validate_model_class()
         generation_config, model_kwargs = self._prepare_generation_config(generation_config, **kwargs)
         self._validate_model_kwargs(model_kwargs.copy())
@@ -4650,6 +4660,7 @@ class GenerationMixin:
         while self._has_unfinished_sequences(this_peer_finished, synced_gpus, device=input_ids.device):
             cur_len = input_ids.shape[-1]
 
+            start_time = time.time()
             #  1. Fetch candidate sequences from a `CandidateGenerator`
             candidate_input_ids, candidate_logits = candidate_generator.get_candidates(input_ids)
             candidate_input_ids = candidate_input_ids.to(self.device)
@@ -4658,11 +4669,17 @@ class GenerationMixin:
 
             candidate_length = candidate_input_ids.shape[1] - input_ids.shape[1]
             is_done_candidate = stopping_criteria(candidate_input_ids, None)
-
+            stop_time = time.time()
+            
+            candidate_time = stop_time - start_time
+            num_generated_tokens = candidate_length
+            
             # 2. Use the original model to obtain the next token logits given the candidate sequence. We obtain
             # `candidate_length + 1` relevant logits from this process: in the event that all candidates are correct,
             # we use this forward pass to also pick the subsequent logits in the original model.
 
+            start_time = time.time()
+            
             # 2.1. Prepare the model inputs
             model_kwargs = _prepare_attention_mask(
                 model_kwargs, candidate_input_ids.shape[1], self.config.is_encoder_decoder
@@ -4687,6 +4704,9 @@ class GenerationMixin:
                 output_attentions=output_attentions,
                 output_hidden_states=output_hidden_states,
             )
+            stop_time = time.time() 
+            oracle_time = stop_time - start_time
+            
 
             # 2.3. Process the new logits
             new_logits = outputs.logits[:, -candidate_length - 1 :]  # excludes the input prompt if present
@@ -4697,6 +4717,7 @@ class GenerationMixin:
             if len(logits_warper) > 0:
                 for i in range(candidate_length + 1):
                     new_logits[:, i, :] = logits_warper(candidate_input_ids[:, : cur_len + i], new_logits[:, i, :])
+                    
 
             # 3. Select the accepted tokens. There are two possible cases:
             # Case 1: `do_sample=True` and we have logits for the candidates (originally from speculative decoding)
@@ -4714,6 +4735,7 @@ class GenerationMixin:
             # original model logits with the candidate tokens. We can keep the candidate tokens until the first
             # mismatch, or until the max length is reached.
             else:
+
                 if do_sample:
                     probs = new_logits.softmax(dim=-1)
                     selected_tokens = torch.multinomial(probs[0, :, :], num_samples=1).squeeze(1)[None, :]
@@ -4727,6 +4749,11 @@ class GenerationMixin:
                 if is_done_candidate and n_matches == candidate_length:
                     n_matches -= 1
                 valid_tokens = selected_tokens[:, : n_matches + 1]
+                num_valid_tokens = valid_tokens.shape[-1]
+
+
+            
+            logger.info(f"candidate_time: {candidate_time}, oracle_time: {oracle_time}, generated_tokens: {num_generated_tokens}, accepted_tokens: {num_valid_tokens}")
 
             # 4. Update variables according to the number of matching assistant tokens. Remember: the token generated
             # by the model after the last candidate match is also valid, as it is generated from a correct sequence.

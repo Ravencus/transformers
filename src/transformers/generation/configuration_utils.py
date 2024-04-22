@@ -57,6 +57,9 @@ class GenerationMode(ExplicitEnum):
     BEAM_SAMPLE = "beam_sample"
     CONSTRAINED_BEAM_SEARCH = "constrained_beam_search"
     GROUP_BEAM_SEARCH = "group_beam_search"
+    
+    
+    STAGED_SPECULATION = "staged_speculation" # 8803 staged feature
 
 
 class GenerationConfig(PushToHubMixin):

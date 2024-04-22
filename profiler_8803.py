@@ -1,5 +1,10 @@
 import time
 from tqdm import tqdm
+from transformers import AutoModelForCausalLM, AutoTokenizer
+import transformers
+
+
+
 
 def generate_with_time(model, inputs, **kwargs):
     start_time = time.time()
@@ -15,10 +20,20 @@ def assisted_generate_with_time(model, assistant_model, inputs, **kwargs):
     return outputs, generation_time
 
 if __name__ == "__main__":
+    from transformers.utils import logging
+    logging.set_verbosity_info()
+    logger = logging.get_logger("transformers")
     
-    from transformers import AutoModelForCausalLM, AutoTokenizer
     
-    prompt = "How to measure my generation time?"
+    import logging as py_logging
+    import os
+    
+    file_handler = py_logging.FileHandler("test.log")
+    logging.add_handler(file_handler)
+    logger.info("Starting the test")
+    
+    
+    prompt = "Do you know what I'm saying?"
     
     checkpoint = "EleutherAI/pythia-1.4b-deduped"
     assistant_checkpoint = "EleutherAI/pythia-160m-deduped"
@@ -29,7 +44,8 @@ if __name__ == "__main__":
     
     raw_time = generate_with_time(model, inputs)
     assisted_time = assisted_generate_with_time(model, assistant_model, inputs)
-    print("raw:")
-    print(raw_time)
-    print("assisted:")
-    print(assisted_time)
+    logger.info(f"Raw generation time: {raw_time[1]}")
+    logger.info(f"Assisted generation time: {assisted_time[1]}")
+    
+    # use tokenizers to decode the outputs
+    logger.info(tokenizer.decode(raw_time[0][0]))
