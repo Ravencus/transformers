@@ -4991,8 +4991,7 @@ class GenerationMixin:
         unfinished_sequences = torch.ones(batch_size, dtype=torch.long, device=input_ids.device)
         model_kwargs["cache_position"] = torch.arange(cur_len, device=input_ids.device)
         
-        stage_1_limit = 10
-        cascade_tracker = 0 # use to determine when to forward to the next cascade model
+        start_len = input_ids.shape[-1] # update to track sequence accepted by the final cascade model
         this_peer_finished = False
         while self._has_unfinished_sequences(this_peer_finished, synced_gpus, device=input_ids.device):
             cur_len = input_ids.shape[-1]
@@ -5025,20 +5024,14 @@ class GenerationMixin:
             model_inputs = self.prepare_inputs_for_generation(candidate_input_ids, **model_kwargs)
             if "num_logits_to_keep" in model_inputs:
                 model_inputs["num_logits_to_keep"] = candidate_length + 1
-            
-            # 2.2. Run a forward pass on the candidate sequence
-            # outputs = self(
-            #     **model_inputs,
-            #     output_attentions=output_attentions,
-            #     output_hidden_states=output_hidden_states,
-            # )
+                
             outputs = first_cascade_model.generate(
                 **model_inputs,
                 output_attentions=output_attentions,
                 output_hidden_states=output_hidden_states,
             )
 
-            # 2.3. Process the new logits
+            # Process the new logits
             new_logits = outputs.logits[:, -candidate_length - 1 :]  # excludes the input prompt if present
             next_token_logits = new_logits.clone()
             if len(logits_processor) > 0:
@@ -5060,7 +5053,6 @@ class GenerationMixin:
             valid_tokens = selected_tokens[:, : n_matches + 1]
             num_valid_tokens = valid_tokens.shape[-1]
             
-            cascade_tracker += num_valid_tokens
             
             # 4.1. Get the valid continuation, after the matching tokens
             input_ids = torch.cat((input_ids, valid_tokens), dim=-1)
@@ -5075,11 +5067,49 @@ class GenerationMixin:
             # 5. Update the candidate generation strategy if needed
             candidate_generator.update_candidate_strategy(input_ids, new_logits, n_matches)
             
-            if cascade_tracker >= stage_1_limit:
+            if new_cur_len - start_len >= 10 or (is_done_candidate and n_matches == candidate_length):
                 # prepare the input for the next cascade model
-                cascade_tracker = 0
                 
-            
+                model_kwargs = _prepare_attention_mask(
+                    model_kwargs, input_ids.shape[1], self.config.is_encoder_decoder
+                )
+                model_kwargs = _prepare_token_type_ids(model_kwargs, input_ids.shape[1])
+
+                model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
+                
+                candidate_new_tokens = input_ids[:, start_len:]
+                candidate_length = candidate_new_tokens.shape[1]
+                outputs = self(
+                    **model_inputs,
+                    output_attentions=output_attentions,
+                    output_hidden_states=output_hidden_states,
+                )
+                # Process the new logits
+                new_logits = outputs.logits[:, -candidate_length - 1 :]  # excludes the input prompt if present
+                next_token_logits = new_logits.clone()
+                if len(logits_processor) > 0:
+                    for i in range(candidate_length + 1):
+                        new_logits[:, i, :] = logits_processor(input_ids[:, : start_len + i], new_logits[:, i, :])
+                if len(logits_warper) > 0:
+                    for i in range(candidate_length + 1):
+                        new_logits[:, i, :] = logits_warper(input_ids[:, : start_len + i], new_logits[:, i, :])
+                
+                selected_tokens = new_logits.argmax(dim=-1)
+                n_matches = ((~(candidate_new_tokens == selected_tokens[:, :-1])).cumsum(dim=-1) < 1).sum()
+                # TODO: this check is wrong, design logic for maxlength check later
+                if is_done_candidate and n_matches == candidate_length:
+                    n_matches -= 1
+                valid_tokens = selected_tokens[:, : n_matches + 1]
+                # num_valid_tokens = valid_tokens.shape[-1]
+                input_ids = torch.cat((input_ids, valid_tokens), dim=-1)
+                if streamer is not None:
+                    streamer.put(valid_tokens.cpu())
+                new_cur_len = input_ids.shape[-1]
+                
+                # Discard past key values relative to unused assistant tokens
+                new_cache_size = new_cur_len - 1
+                outputs.past_key_values = _crop_past_key_values(self, outputs.past_key_values, new_cache_size)
+
             if synced_gpus and this_peer_finished:
                 continue  # don't waste resources running the code we don't need
             
