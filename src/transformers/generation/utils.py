@@ -1509,7 +1509,7 @@ class GenerationMixin:
         self._validate_generated_length(generation_config, input_ids_length, has_default_max_length)
 
         # 7. determine generation mode
-        generation_mode = generation_config.get_generation_mode(assistant_model)
+        generation_mode = generation_config.get_generation_mode(assistant_model, secondary_assistant_model)
 
         if streamer is not None and (generation_config.num_beams > 1):
             raise ValueError(

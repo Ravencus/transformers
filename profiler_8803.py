@@ -32,13 +32,14 @@ if __name__ == "__main__":
     logging.add_handler(file_handler)
     logger.info("Starting the test")
     
-    prompt = "Do you know what I'm saying?"
+    prompt = "What's your maximum input length?"
     
     # checkpoint = "EleutherAI/pythia-1.4b-deduped"
-    # assistant_checkpoint = "EleutherAI/pythia-160m-deduped"
+    checkpoint = "EleutherAI/pythia-2.8b-deduped"
+    assistant_checkpoint = "EleutherAI/pythia-160m-deduped"
     
-    checkpoint = "meta-llama/Llama-2-7b-chat-hf"
-    assistant_checkpoint = "PY007/TinyLlama-1.1B-Chat-v0.1"
+    # checkpoint = "meta-llama/Llama-2-7b-chat-hf"
+    # assistant_checkpoint = "PY007/TinyLlama-1.1B-Chat-v0.1"
     
     tokenizer = AutoTokenizer.from_pretrained(checkpoint)
     inputs = tokenizer(prompt, return_tensors="pt")

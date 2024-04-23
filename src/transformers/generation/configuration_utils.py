@@ -409,7 +409,7 @@ class GenerationConfig(PushToHubMixin):
     def __repr__(self):
         return f"{self.__class__.__name__} {self.to_json_string(ignore_metadata=True)}"
 
-    def get_generation_mode(self, assistant_model: Optional["PreTrainedModel"] = None) -> GenerationMode:
+    def get_generation_mode(self, assistant_model: Optional["PreTrainedModel"] = None, secondary_assistant_model: Optional["PreTrainedModel"] = None) -> GenerationMode:
         """
         Returns the generation mode triggered by the [`GenerationConfig`] instance.
 
@@ -455,6 +455,13 @@ class GenerationConfig(PushToHubMixin):
                     "You've set `assistant_model`, which triggers assisted generate. Currently, assisted generate "
                     "is only supported with Greedy Search and Sample."
                 )
+                
+        # 2-stage speculative generation
+        
+        if secondary_assistant_model is not None:
+            generation_mode = GenerationMode.STAGED_SPECULATION
+                
+                
         return generation_mode
 
     def validate(self, is_init=False):
