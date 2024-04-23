@@ -4992,6 +4992,7 @@ class GenerationMixin:
         model_kwargs["cache_position"] = torch.arange(cur_len, device=input_ids.device)
         
         stage_1_limit = 10
+        cascade_tracker = 0 # use to determine when to forward to the next cascade model
         this_peer_finished = False
         while self._has_unfinished_sequences(this_peer_finished, synced_gpus, device=input_ids.device):
             cur_len = input_ids.shape[-1]
@@ -5031,7 +5032,7 @@ class GenerationMixin:
             #     output_attentions=output_attentions,
             #     output_hidden_states=output_hidden_states,
             # )
-            outputs = first_cascade_model(
+            outputs = first_cascade_model.generate(
                 **model_inputs,
                 output_attentions=output_attentions,
                 output_hidden_states=output_hidden_states,
@@ -5059,6 +5060,8 @@ class GenerationMixin:
             valid_tokens = selected_tokens[:, : n_matches + 1]
             num_valid_tokens = valid_tokens.shape[-1]
             
+            cascade_tracker += num_valid_tokens
+            
             # 4.1. Get the valid continuation, after the matching tokens
             input_ids = torch.cat((input_ids, valid_tokens), dim=-1)
             if streamer is not None:
@@ -5071,6 +5074,11 @@ class GenerationMixin:
             
             # 5. Update the candidate generation strategy if needed
             candidate_generator.update_candidate_strategy(input_ids, new_logits, n_matches)
+            
+            if cascade_tracker >= stage_1_limit:
+                # prepare the input for the next cascade model
+                cascade_tracker = 0
+                
             
             if synced_gpus and this_peer_finished:
                 continue  # don't waste resources running the code we don't need
