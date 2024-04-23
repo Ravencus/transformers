@@ -27,20 +27,30 @@ if __name__ == "__main__":
     
     import logging as py_logging
     import os
-    
+    import torch
     file_handler = py_logging.FileHandler("test.log")
     logging.add_handler(file_handler)
     logger.info("Starting the test")
     
-    
     prompt = "Do you know what I'm saying?"
     
-    checkpoint = "EleutherAI/pythia-1.4b-deduped"
-    assistant_checkpoint = "EleutherAI/pythia-160m-deduped"
+    # checkpoint = "EleutherAI/pythia-1.4b-deduped"
+    # assistant_checkpoint = "EleutherAI/pythia-160m-deduped"
+    
+    checkpoint = "meta-llama/Llama-2-7b-chat-hf"
+    assistant_checkpoint = "PY007/TinyLlama-1.1B-Chat-v0.1"
+    
     tokenizer = AutoTokenizer.from_pretrained(checkpoint)
     inputs = tokenizer(prompt, return_tensors="pt")
     model = AutoModelForCausalLM.from_pretrained(checkpoint)
     assistant_model = AutoModelForCausalLM.from_pretrained(assistant_checkpoint)
+    
+    device = "cuda:0" if torch.cuda.is_available() else "cpu"
+    print(device)
+    model.to(device)
+    assistant_model.to(device)
+    inputs.to(device)
+
     
     raw_time = generate_with_time(model, inputs)
     assisted_time = assisted_generate_with_time(model, assistant_model, inputs)
