@@ -1393,6 +1393,7 @@ class GenerationMixin:
         generation_config, model_kwargs = self._prepare_generation_config(generation_config, **kwargs)
         self._validate_model_kwargs(model_kwargs.copy())
 
+
         # 2. Set generation parameters if not already defined
         if synced_gpus is None:
             if is_deepspeed_zero3_enabled() and dist.get_world_size() > 1:
@@ -1582,6 +1583,59 @@ class GenerationMixin:
                 streamer=streamer,
                 **model_kwargs,
             )
+            
+        if generation_mode == GenerationMode.STAGED_SPECULATION:
+            if generation_config.num_return_sequences > 1:
+                raise ValueError(
+                    "num_return_sequences has to be 1 when doing assisted generate, "
+                    f"but is {generation_config.num_return_sequences}."
+                )
+            if batch_size > 1:
+                raise ValueError("assisted generate is only supported for batch_size = 1")
+            if not model_kwargs["use_cache"]:
+                raise ValueError("assisted generate requires `use_cache=True`")
+            
+            # 11. get the first candidate generator, given the parameterization
+            candidate_generator_1 = self._get_candidate_generator(
+                generation_config=generation_config,
+                input_ids=input_ids,
+                inputs_tensor=inputs_tensor,
+                assistant_model=assistant_model,
+                logits_processor=logits_processor,
+                model_kwargs=model_kwargs,
+            )
+            
+            # TODO: 2-stage speculation using self._staged_assisted_decoding
+            candidate_generator_2 = self._get_candidate_generator(
+                generation_config=generation_config,
+                input_ids=input_ids,
+                inputs_tensor=inputs_tensor,
+                assistant_model=secondary_assistant_model,
+                logits_processor=logits_processor,
+                model_kwargs=model_kwargs,
+            )
+            
+            # 12. run staged assisted generate
+            result = self._staged_assisted_decoding(
+                input_ids,
+                candidate_generator_1=candidate_generator_1,
+                candidate_generator_2=candidate_generator_2,
+                do_sample=generation_config.do_sample,
+                logits_processor=prepared_logits_processor,
+                logits_warper=self._get_logits_warper(generation_config) if generation_config.do_sample else None,
+                stopping_criteria=prepared_stopping_criteria,
+                pad_token_id=generation_config.pad_token_id,
+                output_scores=generation_config.output_scores,
+                output_logits=generation_config.output_logits,
+                return_dict_in_generate=generation_config.return_dict_in_generate,
+                synced_gpus=synced_gpus,
+                streamer=streamer,
+                **model_kwargs,
+            )
+            
+                
+            
+        
         if generation_mode == GenerationMode.GREEDY_SEARCH:
             # 11. run greedy search
             result = self._greedy_search(
@@ -4862,6 +4916,42 @@ class GenerationMixin:
                 )
         else:
             return input_ids
+
+    def _staged_assisted_decoding(
+        self,
+        input_ids: torch.LongTensor,
+        candidate_generator_1: Optional["CandidateGenerator"] = None,
+        candidate_generator_2: Optional["CandidateGenerator"] = None,
+        do_sample: bool = False,
+        logits_processor: Optional[LogitsProcessorList] = None,
+        logits_warper: Optional[LogitsProcessorList] = None,
+        stopping_criteria: Optional[StoppingCriteriaList] = None,
+        pad_token_id: Optional[int] = None,
+        eos_token_id: Optional[Union[int, List[int]]] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        output_scores: Optional[bool] = None,
+        output_logits: Optional[bool] = None,
+        return_dict_in_generate: Optional[bool] = None,
+        synced_gpus: bool = False,
+        streamer: Optional["BaseStreamer"] = None,
+        **model_kwargs,
+    ) -> Union[GenerateNonBeamOutput, torch.LongTensor]:
+        print("entrypoint accessed correctly")
+        raise NotImplementedError("This method is not implemented yet.")
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 def _speculative_sampling(
