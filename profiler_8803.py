@@ -68,7 +68,7 @@ if __name__ == "__main__":
     
     # raw_time = generate_with_time(model, inputs)
     # assisted_time = assisted_generate_with_time(model, assistant_model, inputs)
-    assisted_time = staged_assisted_generate_with_time(model, assistant_model_1, assistant_model_2, inputs)
+    assisted_time = staged_assisted_generate_with_time(model, assistant_model_2, assistant_model_1, inputs)
     
     # logger.info(f"Raw generation time: {raw_time[1]}")
     logger.info(f"Assisted generation time: {assisted_time[1]}")

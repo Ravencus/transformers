@@ -237,7 +237,119 @@ class AssistedCandidateGenerator(CandidateGenerator):
             else:
                 self.num_assistant_tokens = max(1.0, self.num_assistant_tokens - 1.0)
 
-
+class StagedAssistedCandidateGenerator(CandidateGenerator):
+    def __init__(
+            self,
+            input_ids: torch.LongTensor,
+            assistant_model_1: "PreTrainedModel",
+            assistant_model_2: "PreTrainedModel",
+            generation_config: "GenerationConfig",
+            logits_processor: "LogitsProcessorList",
+            model_kwargs: Dict,
+            inputs_tensor: Optional[torch.Tensor] = None,
+    ):
+        device = assistant_model_1.device
+        input_ids = input_ids.to(device)
+        if inputs_tensor is not None:
+            inputs_tensor = inputs_tensor.to(device)
+        
+        # Prepare the assistant and the starting number of candidate tokens
+        self.assistant_model_1 = assistant_model_1
+        self.num_assistant_tokens = assistant_model_1.generation_config.num_assistant_tokens
+        self.assistant_model_2 = assistant_model_2
+        
+        # Prepare the kwargs for the assistant model
+        assistant_kwargs = {}
+        for key, value in model_kwargs.items():  # deepcopy crashes if we attempt to copy encoder outputs with grads
+            if key not in ("encoder_outputs", "assistant_encoder_outputs"):
+                assistant_kwargs[key] = (
+                    value.detach().to(device) if isinstance(value, torch.Tensor) else copy.deepcopy(value)
+                )
+        
+        if "assistant_encoder_outputs" in model_kwargs:
+            assistant_kwargs["encoder_outputs"] = model_kwargs["assistant_encoder_outputs"]
+        elif assistant_model_1.config.is_encoder_decoder:
+            inputs_tensor, model_input_name, assistant_kwargs = assistant_model_1._prepare_model_inputs(
+                inputs_tensor, assistant_model_1.generation_config.bos_token_id, assistant_kwargs
+            )
+            assistant_kwargs = assistant_model_1._prepare_encoder_decoder_kwargs_for_generation(
+                inputs_tensor, assistant_kwargs, model_input_name
+            )
+        elif "encoder_outputs" in model_kwargs:
+            assistant_kwargs["encoder_outputs"] = model_kwargs["encoder_outputs"]
+        self.assistant_kwargs = assistant_kwargs
+        
+        # Prepare assistant model's keys of inputs
+        if assistant_model_1.config.is_encoder_decoder:
+            # both are encoder-decoder
+            self.input_ids_key = "decoder_input_ids"
+        elif "encoder_outputs" in assistant_kwargs:
+            # special case for encoder-decoder with decoder-only assistant (like DistilWhisper)
+            self.input_ids_key = "input_ids"
+            self.assistant_kwargs["attention_mask"] = self.assistant_kwargs.get(
+                "decoder_attention_mask",
+                torch.ones((input_ids.shape[0], 1), device=input_ids.device, dtype=torch.long),
+            )
+        else:
+            # both are decoder-only
+            self.input_ids_key = "input_ids"
+            
+        # Prepare generation-related options.
+        self.logits_processor = logits_processor
+        self.generation_config = copy.deepcopy(generation_config)
+        self.generation_config.return_dict_in_generate = True
+        self.generation_config.output_scores = True
+        
+        # avoid unnecessary warnings that min_length is larger than max_new_tokens
+        self.main_model_min_length = self.generation_config.min_length
+        self.generation_config.min_length = 0
+        self.generation_config.min_new_tokens = None
+        
+    def get_candidates(self, input_ids: torch.LongTensor) -> Tuple[torch.LongTensor, Optional[torch.FloatTensor]]:
+        new_cur_len = input_ids.shape[-1]
+        max_new_tokens = min(int(self.num_assistant_tokens), self.generation_config.max_length - new_cur_len - 1)
+        min_new_tokens = max(min(max_new_tokens, self.main_model_min_length - new_cur_len), 0)
+        if max_new_tokens == 0:
+            return input_ids, None
+        
+        has_past_key_values = self.assistant_kwargs.get("past_key_values", None) is not None
+        if has_past_key_values:
+            new_cache_size = new_cur_len - 1
+            self.assistant_kwargs["past_key_values"] = _crop_past_key_values(
+                self.assistant_model_1, self.assistant_kwargs["past_key_values"], new_cache_size - 1
+            )  # the assistant does not have the token after the last match, hence the -1
+        
+            self.assistant_kwargs = _prepare_attention_mask(
+                self.assistant_kwargs, new_cur_len, self.assistant_model_1.config.is_encoder_decoder
+            )
+            self.assistant_kwargs = _prepare_token_type_ids(self.assistant_kwargs, new_cur_len)
+        
+        assistant_generation_kwargs = {
+            self.input_ids_key: input_ids,
+            "min_new_tokens": min_new_tokens,
+            "max_new_tokens": max_new_tokens,
+            "generation_config": self.generation_config,
+            "logits_processor": self.logits_processor,
+        }
+        
+        assistant_output = self.assistant_model_1.generate(**assistant_generation_kwargs, **self.assistant_kwargs, assistant_model=self.assistant_model_2)
+        self.assistant_kwargs["past_key_values"] = assistant_output.past_key_values
+        candidate_logits = torch.stack(assistant_output.scores, dim=1)
+        candidate_ids = assistant_output.sequences
+        return candidate_ids, candidate_logits
+        
+    def update_candidate_strategy(self, input_ids: torch.LongTensor, scores: torch.FloatTensor, num_matches: int):
+        if self.assistant_model_1.generation_config.num_assistant_tokens_schedule in {
+            "heuristic",
+            "heuristic_transient",
+        }:
+            if num_matches == int(self.num_assistant_tokens):
+                self.num_assistant_tokens += 2.0
+            else:
+                self.num_assistant_tokens = max(1.0, self.num_assistant_tokens - 1.0)
+        
+        
+        
 class PromptLookupCandidateGenerator(CandidateGenerator):
     """
     `CandidateGenerator` class to be used for prompt lookup generation. This class generates candidates by looking up
