@@ -39,7 +39,7 @@ if __name__ == "__main__":
     logging.add_handler(file_handler)
     logger.info("Starting the test")
     
-    prompt = "What's your maximum input length?"
+    prompt = "What's your math?"
     
     # checkpoint = "EleutherAI/pythia-1.4b-deduped"
     checkpoint = "EleutherAI/pythia-2.8b-deduped"
@@ -68,7 +68,7 @@ if __name__ == "__main__":
     
     # raw_time = generate_with_time(model, inputs)
     # assisted_time = assisted_generate_with_time(model, assistant_model, inputs)
-    assisted_time = staged_assisted_generate_with_time(model, assistant_model_2, assistant_model_1, inputs)
+    assisted_time = staged_assisted_generate_with_time(model, assistant_model_1, assistant_model_2, inputs)
     
     # logger.info(f"Raw generation time: {raw_time[1]}")
     logger.info(f"Assisted generation time: {assisted_time[1]}")

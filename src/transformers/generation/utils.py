@@ -4714,6 +4714,11 @@ class GenerationMixin:
         model_kwargs["cache_position"] = torch.arange(cur_len, device=input_ids.device)
 
         this_peer_finished = False
+        if isinstance(candidate_generator, StagedAssistedCandidateGenerator):
+            logger.info("Entering Staged assisted decoding loop")
+        if isinstance(candidate_generator, AssistedCandidateGenerator):
+            logger.info("Entering Normal Assisted decoding loop")
+            
         while self._has_unfinished_sequences(this_peer_finished, synced_gpus, device=input_ids.device):
             cur_len = input_ids.shape[-1]
 
@@ -4809,9 +4814,10 @@ class GenerationMixin:
                 num_valid_tokens = valid_tokens.shape[-1]
 
 
-            
-            logger.info(f"candidate_time: {candidate_time}, oracle_time: {oracle_time}, generated_tokens: {num_generated_tokens}, accepted_tokens: {num_valid_tokens}")
-
+            if isinstance(candidate_generator, StagedAssistedCandidateGenerator):
+                logger.info(f"Outer: candidate_time: {candidate_time}, oracle_time: {oracle_time}, generated_tokens: {num_generated_tokens}, accepted_tokens: {num_valid_tokens}")
+            if isinstance(candidate_generator, AssistedCandidateGenerator):
+                logger.info(f"Inner: candidate_time: {candidate_time}, oracle_time: {oracle_time}, generated_tokens: {num_generated_tokens}, accepted_tokens: {num_valid_tokens}")
             # 4. Update variables according to the number of matching assistant tokens. Remember: the token generated
             # by the model after the last candidate match is also valid, as it is generated from a correct sequence.
             # Because of this last token, assisted generation search reduces to a normal greedy search/sample if there
@@ -4884,6 +4890,8 @@ class GenerationMixin:
 
             unfinished_sequences = unfinished_sequences & ~stopping_criteria(input_ids, scores)
             this_peer_finished = unfinished_sequences.max() == 0
+        
+        logger.info("Exiting loop")
 
         if streamer is not None:
             streamer.end()
