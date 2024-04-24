@@ -5021,7 +5021,7 @@ class GenerationMixin:
                     dim=0,
                 )
             
-            model_inputs = self.prepare_inputs_for_generation(candidate_input_ids, **model_kwargs)
+            model_inputs = first_cascade_model.prepare_inputs_for_generation(candidate_input_ids, **model_kwargs)
             if "num_logits_to_keep" in model_inputs:
                 model_inputs["num_logits_to_keep"] = candidate_length + 1
                 
