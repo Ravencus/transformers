@@ -72,12 +72,12 @@ if __name__ == "__main__":
 
     # assisted_time_1 = assisted_generate_with_time(model, assistant_model, inputs)
     
-        # raw_time = generate_with_time(model, inputs)
+    # raw_time = generate_with_time(model, inputs)
     # logger.info(f"raw generation time: {raw_time[1]}")
     # logger.info(f"Assisted generation time 2: {assisted_time_2[1]}")
     # log decoded outputs by tokenizers
     # logger.info(tokenizer.decode(raw_time[0][0]))
-    # logger.info(tokenizer.decode(assisted_time_2[0][0]))
+    logger.info(tokenizer.decode(assisted_time_2[0][0]))
     
     # use tokenizers to decode the outputs
     # logger.info(tokenizer.decode(raw_time[0][0]))

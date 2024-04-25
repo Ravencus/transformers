@@ -489,7 +489,9 @@ class CascadeCandidateVerifier(CandidateVerifier):
             )
         elif "encoder_outputs" in model_kwargs:
             verifier_kwargs["encoder_outputs"] = model_kwargs["encoder_outputs"]
-        self.verifier_kwargs = verifier_kwargs        
+        self.verifier_kwargs = verifier_kwargs
+        self.verifier_kwargs["use_cache"] = True
+        self.verifier_kwargs["past_key_values"] = None   
                 
         # Prepare assistant model's keys of inputs
         if verifier_model.config.is_encoder_decoder:
@@ -528,6 +530,10 @@ class CascadeCandidateVerifier(CandidateVerifier):
         candidate_length = candidate_input_ids.shape[1] - input_ids.shape[1]
         cur_len = input_ids.shape[-1]
         num_generated_tokens = candidate_length
+        
+        if self.verifier_kwargs.get("past_key_values", None) is not None:
+            self.verifier_kwargs["past_key_values"] = _crop_past_key_values(self, self.verifier_kwargs["past_key_values"], cur_len - 1)
+        
         self.verifier_kwargs = _prepare_attention_mask(
                 self.verifier_kwargs, candidate_input_ids.shape[1], self.verifier_model.config.is_encoder_decoder
             ) # TODO: where is the original one?
@@ -544,7 +550,9 @@ class CascadeCandidateVerifier(CandidateVerifier):
         model_inputs = self.verifier_model.prepare_inputs_for_generation(candidate_input_ids, **self.verifier_kwargs)
         if "num_logits_to_keep" in model_inputs:
             model_inputs["num_logits_to_keep"] = candidate_length + 1
-            
+        
+        model_inputs["use_cache"] = True
+        
         outputs = self.verifier_model(
             **model_inputs,
             output_attentions=self.output_attentions,

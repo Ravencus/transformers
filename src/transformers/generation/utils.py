@@ -4832,7 +4832,7 @@ class GenerationMixin:
 
 
             
-            logger.info(f"candidate_time: {candidate_time}, oracle_time: {oracle_time}, generated_tokens: {num_generated_tokens}, accepted_tokens: {num_valid_tokens}")
+            # logger.info(f"candidate_time: {candidate_time}, oracle_time: {oracle_time}, generated_tokens: {num_generated_tokens}, accepted_tokens: {num_valid_tokens}")
 
             # 4. Update variables according to the number of matching assistant tokens. Remember: the token generated
             # by the model after the last candidate match is also valid, as it is generated from a correct sequence.
@@ -5037,7 +5037,7 @@ class GenerationMixin:
             start_time = time.time()
             #  1. Fetch candidate sequences from a `CandidateGenerator`
             candidate_input_ids, candidate_logits = candidate_generator.get_candidates(input_ids)
-            
+            logger.info(f"candidate_input_ids: {candidate_input_ids}")
             candidate_input_ids = candidate_input_ids.to(self.device)
             if candidate_logits is not None:
                 candidate_logits = candidate_logits.to(self.device)
@@ -5048,14 +5048,16 @@ class GenerationMixin:
             
             candidate_time = stop_time - start_time
             num_generated_tokens = candidate_length
-            logger.info(f"candidate_time: {candidate_time}, generated_tokens: {num_generated_tokens}")
+            # logger.info(f"candidate_time: {candidate_time}, generated_tokens: {num_generated_tokens}")
             start_time = time.time()
             input_ids, new_logits, n_matches = candidate_verifier.get_continuation(candidate_input_ids=candidate_input_ids, candidate_logits=candidate_logits, input_ids=input_ids, is_done_candidate=is_done_candidate)
+            logger.info(f"cascade 1: {input_ids}")
+            
             stop_time = time.time()
             oracle_time = stop_time - start_time
-            logger.info(f"oracle_time: {oracle_time}, accepted_tokens: {n_matches}")
+            # logger.info(f"oracle_time: {oracle_time}, accepted_tokens: {n_matches}")
             gen_track += n_matches
-            if gen_track >= 5 or is_done_candidate:
+            if gen_track >= 5:
                 #TODO: Run verification with the next verifier
                 gen_track = 0
                 cur_len = true_len
@@ -5099,6 +5101,7 @@ class GenerationMixin:
                 valid_tokens = selected_tokens[:, : n_matches + 1]
                 num_valid_tokens = valid_tokens.shape[-1]
                 input_ids = torch.cat((true_input_ids, valid_tokens), dim=-1)
+                logger.info(f"cascade 2: {input_ids}")
                 new_cur_len = input_ids.shape[-1]
                 new_cache_size = new_cur_len - 1
                 outputs.past_key_values = _crop_past_key_values(self, outputs.past_key_values, new_cache_size)
