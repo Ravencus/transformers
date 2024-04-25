@@ -573,4 +573,7 @@ class CascadeCandidateVerifier(CandidateVerifier):
         new_cur_len = input_ids.shape[-1]
         new_cache_size = new_cur_len - 1
         outputs.past_key_values = _crop_past_key_values(self, outputs.past_key_values, new_cache_size)
-        return input_ids
+        self.verifier_kwargs = self.verifier_model._update_model_kwargs_for_generation(
+            outputs, self.verifier_kwargs, is_encoder_decoder=self.verifier_model.config.is_encoder_decoder
+        )
+        return input_ids, new_logits, n_matches

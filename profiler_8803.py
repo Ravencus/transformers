@@ -39,8 +39,8 @@ if __name__ == "__main__":
     logging.add_handler(file_handler)
     logger.info("Starting the test")
     
-    prompt = "What's your maximum input length?"
-    
+    prompt_1 = "What's my maximum input length?"
+    prompt_2 = "Can you do something else?"
     # checkpoint = "EleutherAI/pythia-1.4b-deduped"
     checkpoint = "EleutherAI/pythia-2.8b-deduped"
     assistant_checkpoint_1 = "EleutherAI/pythia-160m-deduped"
@@ -51,7 +51,8 @@ if __name__ == "__main__":
     # assistant_checkpoint = "PY007/TinyLlama-1.1B-Chat-v0.1"
     
     tokenizer = AutoTokenizer.from_pretrained(checkpoint)
-    inputs = tokenizer(prompt, return_tensors="pt")
+    inputs_1 = tokenizer(prompt_1, return_tensors="pt")
+    inputs_2 = tokenizer(prompt_2, return_tensors="pt")
     model = AutoModelForCausalLM.from_pretrained(checkpoint)
     assistant_model_1 = AutoModelForCausalLM.from_pretrained(assistant_checkpoint_1)
     assistant_model_2 = AutoModelForCausalLM.from_pretrained(assistant_checkpoint_2)
@@ -63,15 +64,20 @@ if __name__ == "__main__":
     assistant_model_1.to(device)
     assistant_model_2.to(device)
     assistant_model.to(device)
-    inputs.to(device)
-
+    inputs_1.to(device)
+    inputs_2.to(device)
     
-    # raw_time = generate_with_time(model, inputs)
-    # assisted_time = assisted_generate_with_time(model, assistant_model, inputs)
-    assisted_time = staged_assisted_generate_with_time(model, assistant_model_1, model, inputs)
+    assisted_time_2 = staged_assisted_generate_with_time(model, assistant_model_1, model, inputs_2)
+    raw_time = generate_with_time(model, inputs_2)
+    # assisted_time_1 = assisted_generate_with_time(model, assistant_model, inputs_1)
+    
     
     # logger.info(f"Raw generation time: {raw_time[1]}")
-    logger.info(f"Assisted generation time: {assisted_time[1]}")
+    logger.info(f"raw generation time: {raw_time[1]}")
+    logger.info(f"Assisted generation time 2: {assisted_time_2[1]}")
+    # log decoded outputs by tokenizers
+    logger.info(tokenizer.decode(raw_time[0][0]))
+    logger.info(tokenizer.decode(assisted_time_2[0][0]))
     
     # use tokenizers to decode the outputs
     # logger.info(tokenizer.decode(raw_time[0][0]))
