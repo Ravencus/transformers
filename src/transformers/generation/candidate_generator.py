@@ -236,7 +236,7 @@ class AssistedCandidateGenerator(CandidateGenerator):
                 self.num_assistant_tokens += 2.0
             else:
                 self.num_assistant_tokens = max(1.0, self.num_assistant_tokens - 1.0)
-
+@DeprecationWarning
 class StagedAssistedCandidateGenerator(CandidateGenerator):
     def __init__(
             self,
@@ -312,17 +312,17 @@ class StagedAssistedCandidateGenerator(CandidateGenerator):
         if max_new_tokens == 0:
             return input_ids, None
         
-        has_past_key_values = self.assistant_kwargs.get("past_key_values", None) is not None
-        if has_past_key_values:
-            new_cache_size = new_cur_len - 1
-            self.assistant_kwargs["past_key_values"] = _crop_past_key_values(
-                self.assistant_model_1, self.assistant_kwargs["past_key_values"], new_cache_size - 1
-            )  # the assistant does not have the token after the last match, hence the -1
+        # has_past_key_values = self.assistant_kwargs.get("past_key_values", None) is not None
+        # if has_past_key_values:
+        #     new_cache_size = new_cur_len - 1
+        #     self.assistant_kwargs["past_key_values"] = _crop_past_key_values(
+        #         self.assistant_model_1, self.assistant_kwargs["past_key_values"], new_cache_size - 1
+        #     )  # the assistant does not have the token after the last match, hence the -1
         
-            self.assistant_kwargs = _prepare_attention_mask(
-                self.assistant_kwargs, new_cur_len, self.assistant_model_1.config.is_encoder_decoder
-            )
-            self.assistant_kwargs = _prepare_token_type_ids(self.assistant_kwargs, new_cur_len)
+        #     self.assistant_kwargs = _prepare_attention_mask(
+        #         self.assistant_kwargs, new_cur_len, self.assistant_model_1.config.is_encoder_decoder
+        #     )
+        #     self.assistant_kwargs = _prepare_token_type_ids(self.assistant_kwargs, new_cur_len)
         
         assistant_generation_kwargs = {
             self.input_ids_key: input_ids,
@@ -333,7 +333,7 @@ class StagedAssistedCandidateGenerator(CandidateGenerator):
         }
         
         assistant_output = self.assistant_model_1.generate(**assistant_generation_kwargs, **self.assistant_kwargs, assistant_model=self.assistant_model_2)
-        self.assistant_kwargs["past_key_values"] = assistant_output.past_key_values
+        # self.assistant_kwargs["past_key_values"] = assistant_output.past_key_values
         candidate_logits = torch.stack(assistant_output.scores, dim=1)
         candidate_ids = assistant_output.sequences
         return candidate_ids, candidate_logits

@@ -39,7 +39,7 @@ if __name__ == "__main__":
     logging.add_handler(file_handler)
     logger.info("Starting the test")
     
-    prompt = "What's your math?"
+    prompt = "What's your math ability?"
     
     # checkpoint = "EleutherAI/pythia-1.4b-deduped"
     checkpoint = "EleutherAI/pythia-2.8b-deduped"
