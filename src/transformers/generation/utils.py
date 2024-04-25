@@ -5025,9 +5025,15 @@ class GenerationMixin:
         model_kwargs["cache_position"] = torch.arange(cur_len, device=input_ids.device)
 
         this_peer_finished = False
+        
+        gen_track = 0
+        true_len = input_ids.shape[-1]
+        true_input_ids = input_ids.clone()
         while self._has_unfinished_sequences(this_peer_finished, synced_gpus, device=input_ids.device):
             cur_len = input_ids.shape[-1]
-
+            # save a copy of input_ids
+            
+            
             start_time = time.time()
             #  1. Fetch candidate sequences from a `CandidateGenerator`
             candidate_input_ids, candidate_logits = candidate_generator.get_candidates(input_ids)
@@ -5042,110 +5048,63 @@ class GenerationMixin:
             
             candidate_time = stop_time - start_time
             num_generated_tokens = candidate_length
-            
+            logger.info(f"candidate_time: {candidate_time}, generated_tokens: {num_generated_tokens}")
+            start_time = time.time()
             input_ids, new_logits, n_matches = candidate_verifier.get_continuation(candidate_input_ids=candidate_input_ids, candidate_logits=candidate_logits, input_ids=input_ids, is_done_candidate=is_done_candidate)
-            
-            # # 2. Use the original model to obtain the next token logits given the candidate sequence. We obtain
-            # # `candidate_length + 1` relevant logits from this process: in the event that all candidates are correct,
-            # # we use this forward pass to also pick the subsequent logits in the original model.
-
-            # start_time = time.time()
-            
-            # # 2.1. Prepare the model inputs
-            # model_kwargs = _prepare_attention_mask(
-            #     model_kwargs, candidate_input_ids.shape[1], self.config.is_encoder_decoder
-            # )
-            # model_kwargs = _prepare_token_type_ids(model_kwargs, candidate_input_ids.shape[1])
-            # if "cache_position" in model_kwargs:
-            #     model_kwargs["cache_position"] = torch.cat(
-            #         (
-            #             model_kwargs["cache_position"],
-            #             torch.arange(cur_len, cur_len + candidate_length, device=input_ids.device, dtype=torch.long),
-            #         ),
-            #         dim=0,
-            #     )
-
-            # model_inputs = self.prepare_inputs_for_generation(candidate_input_ids, **model_kwargs)
-            # if "num_logits_to_keep" in model_inputs:
-            #     model_inputs["num_logits_to_keep"] = candidate_length + 1
-
-            # # 2.2. Run a forward pass on the candidate sequence
-            # outputs = self(
-            #     **model_inputs,
-            #     output_attentions=output_attentions,
-            #     output_hidden_states=output_hidden_states,
-            # )
-            # stop_time = time.time() 
-            # oracle_time = stop_time - start_time
-            
-
-            # # 2.3. Process the new logits
-            # new_logits = outputs.logits[:, -candidate_length - 1 :]  # excludes the input prompt if present
-            # next_token_logits = new_logits.clone()
-            # if len(logits_processor) > 0:
-            #     for i in range(candidate_length + 1):
-            #         new_logits[:, i, :] = logits_processor(candidate_input_ids[:, : cur_len + i], new_logits[:, i, :])
-            # if len(logits_warper) > 0:
-            #     for i in range(candidate_length + 1):
-            #         new_logits[:, i, :] = logits_warper(candidate_input_ids[:, : cur_len + i], new_logits[:, i, :])
+            stop_time = time.time()
+            oracle_time = stop_time - start_time
+            logger.info(f"oracle_time: {oracle_time}, accepted_tokens: {n_matches}")
+            gen_track += n_matches
+            if gen_track >= 5 or is_done_candidate:
+                #TODO: Run verification with the next verifier
+                gen_track = 0
+                cur_len = true_len
+                candidate_input_ids = input_ids
+                candidate_length = candidate_input_ids.shape[1] - cur_len
+                model_kwargs = _prepare_attention_mask(
+                    model_kwargs, candidate_input_ids.shape[1], self.config.is_encoder_decoder
+                )
+                model_kwargs = _prepare_token_type_ids(model_kwargs, candidate_input_ids.shape[1])
+                if "cache_position" in model_kwargs:
+                    model_kwargs["cache_position"] = torch.cat(
+                        (
+                            model_kwargs["cache_position"],
+                            torch.arange(cur_len, cur_len + candidate_length, device=input_ids.device, dtype=torch.long),
+                        ),
+                        dim=0,
+                    )
+                model_inputs = self.prepare_inputs_for_generation(candidate_input_ids, **model_kwargs)
+                if "num_logits_to_keep" in model_inputs:
+                    model_inputs["num_logits_to_keep"] = candidate_length + 1
                     
-
-            # # 3. Select the accepted tokens. There are two possible cases:
-            # # Case 1: `do_sample=True` and we have logits for the candidates (originally from speculative decoding)
-            # # 👉 Apply algorithm 1 from the speculative decoding paper (https://arxiv.org/pdf/2211.17192.pdf).
-            # if do_sample and candidate_logits is not None:
-            #     valid_tokens, n_matches = _speculative_sampling(
-            #         candidate_input_ids,
-            #         candidate_logits,
-            #         candidate_length,
-            #         new_logits,
-            #         is_done_candidate,
-            #     )
-
-            # # Case 2: all other cases (originally from assisted generation) 👉 Compare the tokens selected from the
-            # # original model logits with the candidate tokens. We can keep the candidate tokens until the first
-            # # mismatch, or until the max length is reached.
-            # else:
-
-            #     if do_sample:
-            #         probs = new_logits.softmax(dim=-1)
-            #         selected_tokens = torch.multinomial(probs[0, :, :], num_samples=1).squeeze(1)[None, :]
-            #     else:
-            #         selected_tokens = new_logits.argmax(dim=-1)
-
-            #     candidate_new_tokens = candidate_input_ids[:, cur_len:]
-            #     n_matches = ((~(candidate_new_tokens == selected_tokens[:, :-1])).cumsum(dim=-1) < 1).sum()
-
-            #     # Ensure we don't generate beyond max_len or an EOS token
-            #     if is_done_candidate and n_matches == candidate_length:
-            #         n_matches -= 1
-            #     valid_tokens = selected_tokens[:, : n_matches + 1]
-            #     num_valid_tokens = valid_tokens.shape[-1]
-
-
-            
-            
-            # # 4. Update variables according to the number of matching assistant tokens. Remember: the token generated
-            # # by the model after the last candidate match is also valid, as it is generated from a correct sequence.
-            # # Because of this last token, assisted generation search reduces to a normal greedy search/sample if there
-            # # is no match.
-
-            # # 4.1. Get the valid continuation, after the matching tokens
-            # input_ids = torch.cat((input_ids, valid_tokens), dim=-1)
-            # if streamer is not None:
-            #     streamer.put(valid_tokens.cpu())
-            # new_cur_len = input_ids.shape[-1]
-            
-            
-
-
-            # # 4.2. Discard past key values relative to unused assistant tokens
-            # new_cache_size = new_cur_len - 1
-            # outputs.past_key_values = _crop_past_key_values(self, outputs.past_key_values, new_cache_size)
-            
-            # logger.info(f"candidate_time: {candidate_time}, oracle_time: {oracle_time}, generated_tokens: {num_generated_tokens}, accepted_tokens: {num_valid_tokens}")
-
-            # 5. Update the candidate generation strategy if needed
+                outputs = self(
+                    **model_inputs,
+                    output_attentions=output_attentions,
+                    output_hidden_states=output_hidden_states,
+                )  
+                new_logits = outputs.logits[:, -candidate_length - 1 :]
+                next_token_logits = new_logits.clone()
+                if len(logits_processor) > 0:
+                    for i in range(candidate_length + 1):
+                        new_logits[:, i, :] = logits_processor(candidate_input_ids[:, : cur_len + i], new_logits[:, i, :])
+                if len(logits_warper) > 0:
+                    for i in range(candidate_length + 1):
+                        new_logits[:, i, :] = logits_warper(candidate_input_ids[:, : cur_len + i], new_logits[:, i, :])
+                    
+                selected_tokens = new_logits.argmax(dim=-1)
+                candidate_new_tokens = candidate_input_ids[:, cur_len:]
+                n_matches = ((~(candidate_new_tokens == selected_tokens[:, :-1])).cumsum(dim=-1) < 1).sum()
+                if is_done_candidate and n_matches == candidate_length:
+                    n_matches -= 1
+                valid_tokens = selected_tokens[:, : n_matches + 1]
+                num_valid_tokens = valid_tokens.shape[-1]
+                input_ids = torch.cat((true_input_ids, valid_tokens), dim=-1)
+                new_cur_len = input_ids.shape[-1]
+                new_cache_size = new_cur_len - 1
+                outputs.past_key_values = _crop_past_key_values(self, outputs.past_key_values, new_cache_size)
+                true_input_ids = input_ids.clone()
+                true_len = input_ids.shape[-1]
+                
             candidate_generator.update_candidate_strategy(input_ids, new_logits, n_matches)
 
             if synced_gpus and this_peer_finished:
