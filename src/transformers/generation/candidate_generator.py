@@ -237,7 +237,6 @@ class AssistedCandidateGenerator(CandidateGenerator):
             else:
                 self.num_assistant_tokens = max(1.0, self.num_assistant_tokens - 1.0)
 
-
 class PromptLookupCandidateGenerator(CandidateGenerator):
     """
     `CandidateGenerator` class to be used for prompt lookup generation. This class generates candidates by looking up
@@ -425,3 +424,153 @@ def _prepare_token_type_ids(model_kwargs: Dict[str, Any], new_length: int) -> Di
         token_type_copies = final_token_type.repeat(1, type_length_diff)
         model_kwargs["token_type_ids"] = torch.cat([model_kwargs["token_type_ids"], token_type_copies], dim=-1)
     return model_kwargs
+
+
+
+class CandidateVerifier:
+    """Abstract base class for the cascade verifier."""
+
+    def get_continuation(self, candidate_input_ids: torch.LongTensor, candidate_logits: torch.FloatTensor) -> torch.LongTensor:
+        """
+        get the valid continuation after the matching tokens
+
+        Args:
+            candidate_input_ids (torch.LongTensor): _description_
+            candidate_logits (torch.FloatTensor): _description_
+
+
+
+        Returns:
+            Tuple[torch.LongTensor]:
+            `torch.LongTensor` containing the valid continuation
+        """
+        
+        raise NotImplementedError(
+            f"{self.__class__} is an abstract class. Only classes inheriting this class can call `get_continuation`."
+        )
+
+class CascadeCandidateVerifier(CandidateVerifier):
+    
+    def __init__(
+        self,
+        input_ids: torch.LongTensor,
+        verifier_model: "PreTrainedModel",
+        generation_config: "GenerationConfig",
+        logits_processor: "LogitsProcessorList",
+        model_kwargs: Dict,
+        inputs_tensor: Optional[torch.Tensor] = None,
+    ):
+        device = verifier_model.device
+        input_ids = input_ids.to(device)
+        if inputs_tensor is not None:
+            inputs_tensor = inputs_tensor.to(device)
+        
+        self.config = verifier_model.config
+        
+        # prepare the verifier model and starting sequence
+        self.verifier_model = verifier_model
+        # self.num_verifier_tokens = verifier_model.generation_config.num_verifier_tokens
+        
+        # prepare the kwargs for the verifier model
+        verifier_kwargs = {}
+        for key, value in model_kwargs.items():  # deepcopy crashes if we attempt to copy encoder outputs with grads
+            if key not in ("encoder_outputs", "assistant_encoder_outputs"):
+                verifier_kwargs[key] = (
+                    value.detach().to(device) if isinstance(value, torch.Tensor) else copy.deepcopy(value)
+                )
+        if "assistant_encoder_outputs" in model_kwargs:
+            assistant_kwargs["encoder_outputs"] = model_kwargs["assistant_encoder_outputs"]
+        elif verifier_model.config.is_encoder_decoder:
+            inputs_tensor, model_input_name, assistant_kwargs = verifier_model._prepare_model_inputs(
+                inputs_tensor, verifier_model.generation_config.bos_token_id, assistant_kwargs
+            )
+            assistant_kwargs = verifier_model._prepare_encoder_decoder_kwargs_for_generation(
+                inputs_tensor, assistant_kwargs, model_input_name
+            )
+        elif "encoder_outputs" in model_kwargs:
+            verifier_kwargs["encoder_outputs"] = model_kwargs["encoder_outputs"]
+        self.verifier_kwargs = verifier_kwargs        
+                
+        # Prepare assistant model's keys of inputs
+        if verifier_model.config.is_encoder_decoder:
+            # both are encoder-decoder
+            self.input_ids_key = "decoder_input_ids"
+        elif "encoder_outputs" in verifier_kwargs:
+            # special case for encoder-decoder with decoder-only assistant (like DistilWhisper)
+            self.input_ids_key = "input_ids"
+            self.verifier_kwargs["attention_mask"] = self.verifier_kwargs.get(
+                "decoder_attention_mask",
+                torch.ones((input_ids.shape[0], 1), device=input_ids.device, dtype=torch.long),
+            )
+        else:
+            # both are decoder-only
+            self.input_ids_key = "input_ids"
+        
+        # Prepare generation-related options.
+        self.logits_processor = logits_processor
+        # self.logits_warper = logits_warper
+        self.generation_config = copy.deepcopy(generation_config)
+        self.generation_config.return_dict_in_generate = True
+        self.generation_config.output_scores = True
+        
+        # avoid unnecessary warnings that min_length is larger than max_new_tokens
+        self.main_model_min_length = self.generation_config.min_length
+        self.generation_config.min_length = 0
+        self.generation_config.min_new_tokens = None
+        self.output_attentions = self.generation_config.output_attentions
+        self.output_hidden_states = self.generation_config.output_hidden_states
+        self.return_dict_in_generate = self.generation_config.return_dict_in_generate
+        
+    def get_continuation(self, candidate_input_ids: torch.LongTensor, candidate_logits: torch.FloatTensor, input_ids: torch.LongTensor, is_done_candidate: bool) -> torch.LongTensor:
+        candidate_input_ids = candidate_input_ids.to(self.verifier_model.device)
+        if candidate_logits is not None:
+                candidate_logits = candidate_logits.to(self.verifier_model.device)
+        candidate_length = candidate_input_ids.shape[1] - input_ids.shape[1]
+        cur_len = input_ids.shape[-1]
+        num_generated_tokens = candidate_length
+        self.verifier_kwargs = _prepare_attention_mask(
+                self.verifier_kwargs, candidate_input_ids.shape[1], self.verifier_model.config.is_encoder_decoder
+            ) # TODO: where is the original one?
+        self.verifier_kwargs = _prepare_token_type_ids(self.verifier_kwargs, candidate_input_ids.shape[1])
+        if "cache_position" in self.verifier_kwargs:
+                self.verifier_kwargs["cache_position"] = torch.cat(
+                    (
+                        self.verifier_kwargs["cache_position"],
+                        torch.arange(cur_len, cur_len + candidate_length, device=input_ids.device, dtype=torch.long),
+                    ),
+                    dim=0,
+                )
+                
+        model_inputs = self.verifier_model.prepare_inputs_for_generation(candidate_input_ids, **self.verifier_kwargs)
+        if "num_logits_to_keep" in model_inputs:
+            model_inputs["num_logits_to_keep"] = candidate_length + 1
+            
+        outputs = self.verifier_model(
+            **model_inputs,
+            output_attentions=self.output_attentions,
+            output_hidden_states=self.output_hidden_states,
+        )
+        new_logits = outputs.logits[:, -candidate_length - 1 :]
+        next_token_logits = new_logits.clone()
+        logits_processor = self.logits_processor
+        # logits_warper = self.logits_warper
+        
+        if len(logits_processor) > 0:
+            for i in range(candidate_length + 1):
+                new_logits[:, i, :] = logits_processor(candidate_input_ids[:, : cur_len + i], new_logits[:, i, :])
+        # if len(logits_warper) > 0: # TODO: check usage
+        #     for i in range(candidate_length + 1):
+        #         new_logits[:, i, :] = logits_warper(candidate_input_ids[:, : cur_len + i], new_logits[:, i, :])
+        selected_tokens = new_logits.argmax(dim=-1)
+        candidate_new_tokens = candidate_input_ids[:, cur_len:]
+        n_matches = ((~(candidate_new_tokens == selected_tokens[:, :-1])).cumsum(dim=-1) < 1).sum()
+        if is_done_candidate and n_matches == candidate_length:
+            n_matches -= 1
+        valid_tokens = selected_tokens[:, : n_matches + 1]
+        num_valid_tokens = valid_tokens.shape[-1]
+        
+        input_ids = torch.cat((input_ids, valid_tokens), dim=-1)
+        new_cur_len = input_ids.shape[-1]
+        new_cache_size = new_cur_len - 1
+        outputs.past_key_values = _crop_past_key_values(self, outputs.past_key_values, new_cache_size)
+        return input_ids

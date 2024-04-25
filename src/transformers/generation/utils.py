@@ -47,6 +47,8 @@ from .beam_search import BeamScorer, BeamSearchScorer, ConstrainedBeamSearchScor
 from .candidate_generator import (
     AssistedCandidateGenerator,
     CandidateGenerator,
+    CandidateVerifier,
+    CascadeCandidateVerifier,
     PromptLookupCandidateGenerator,
     _crop_past_key_values,
     _prepare_attention_mask,
@@ -686,6 +688,28 @@ class GenerationMixin:
             f" enable beam search for {self.__class__}"
         )
 
+    
+    def _get_candidate_verifier(
+        self,
+        generation_config: GenerationConfig,
+        input_ids: torch.LongTensor,
+        inputs_tensor: torch.Tensor,
+        verifier_model: "PreTrainedModel",
+        logits_processor: LogitsProcessorList,
+        model_kwargs: Dict,
+    ) -> CandidateVerifier:
+        """
+        Returns the candidate verifier to be used in `assisted_generation`
+        """
+        return CascadeCandidateVerifier(
+            input_ids=input_ids,
+            verifier_model=verifier_model,
+            generation_config=generation_config,
+            logits_processor=logits_processor,
+            model_kwargs=model_kwargs,
+            inputs_tensor=inputs_tensor,
+        )
+    
     def _get_candidate_generator(
         self,
         generation_config: GenerationConfig,
@@ -1606,13 +1630,21 @@ class GenerationMixin:
             )
             
             # TODO: 2-stage speculation using self._staged_assisted_decoding
-            # second assistant model is the first cascade model
+            # second assistant model is the first verifier
+            first_verifier = self._get_candidate_verifier(
+                generation_config=generation_config,
+                input_ids=input_ids,
+                inputs_tensor=inputs_tensor,
+                verifier_model=secondary_assistant_model,
+                logits_processor=logits_processor,
+                model_kwargs=model_kwargs,
+            )
             
             # 12. run staged assisted generate
             result = self._staged_assisted_decoding(
                 input_ids,
                 candidate_generator=candidate_generator,
-                first_cascade_model=secondary_assistant_model,
+                candidate_verifier=first_verifier,
                 do_sample=generation_config.do_sample,
                 logits_processor=prepared_logits_processor,
                 logits_warper=self._get_logits_warper(generation_config) if generation_config.do_sample else None,
@@ -4914,7 +4946,7 @@ class GenerationMixin:
         self, # self is the last cascade model
         input_ids: torch.LongTensor,
         candidate_generator: Optional["CandidateGenerator"] = None,
-        first_cascade_model: Optional["PreTrainedModel"] = None,
+        candidate_verifier: Optional["CandidateVerifier"] = None,
         do_sample: bool = False,
         logits_processor: Optional[LogitsProcessorList] = None,
         logits_warper: Optional[LogitsProcessorList] = None,
@@ -4930,7 +4962,8 @@ class GenerationMixin:
         streamer: Optional["BaseStreamer"] = None,
         **model_kwargs,
     ) -> Union[GenerateNonBeamOutput, torch.LongTensor]:
-        # init values
+    
+    # init values
         logits_processor = logits_processor if logits_processor is not None else LogitsProcessorList()
         logits_warper = logits_warper if logits_warper is not None else LogitsProcessorList()
         stopping_criteria = stopping_criteria if stopping_criteria is not None else StoppingCriteriaList()
@@ -4953,7 +4986,7 @@ class GenerationMixin:
             if eos_token_id is None and self.generation_config.eos_token_id is not None:
                 eos_token_id = self.generation_config.eos_token_id
                 stopping_criteria.append(EosTokenCriteria(eos_token_id=eos_token_id))
-        
+
         if isinstance(eos_token_id, int):
             eos_token_id = [eos_token_id]
         output_scores = output_scores if output_scores is not None else self.generation_config.output_scores
@@ -4969,43 +5002,54 @@ class GenerationMixin:
             if return_dict_in_generate is not None
             else self.generation_config.return_dict_in_generate
         )
-        
+
         # init attention / hidden states / scores tuples
         scores = () if (return_dict_in_generate and output_scores) else None
         raw_logits = () if (return_dict_in_generate and output_logits) else None
         decoder_attentions = () if (return_dict_in_generate and output_attentions) else None
         cross_attentions = () if (return_dict_in_generate and output_attentions) else None
         decoder_hidden_states = () if (return_dict_in_generate and output_hidden_states) else None
-        
+
         # if model is an encoder-decoder, retrieve encoder attention weights and hidden states
         if return_dict_in_generate and self.config.is_encoder_decoder:
             encoder_attentions = model_kwargs["encoder_outputs"].get("attentions") if output_attentions else None
             encoder_hidden_states = (
                 model_kwargs["encoder_outputs"].get("hidden_states") if output_hidden_states else None
             )
-        
+
         # keep track of which sequences are already finished
         batch_size, cur_len = input_ids.shape
         if "inputs_embeds" in model_kwargs:
             cur_len = model_kwargs["inputs_embeds"].shape[1]
         unfinished_sequences = torch.ones(batch_size, dtype=torch.long, device=input_ids.device)
         model_kwargs["cache_position"] = torch.arange(cur_len, device=input_ids.device)
-        
-        start_len = input_ids.shape[-1] # update to track sequence accepted by the final cascade model
+
         this_peer_finished = False
         while self._has_unfinished_sequences(this_peer_finished, synced_gpus, device=input_ids.device):
             cur_len = input_ids.shape[-1]
-            
-             #  1. Fetch candidate sequences from a `CandidateGenerator`
+
+            start_time = time.time()
+            #  1. Fetch candidate sequences from a `CandidateGenerator`
             candidate_input_ids, candidate_logits = candidate_generator.get_candidates(input_ids)
+            
             candidate_input_ids = candidate_input_ids.to(self.device)
             if candidate_logits is not None:
                 candidate_logits = candidate_logits.to(self.device)
 
             candidate_length = candidate_input_ids.shape[1] - input_ids.shape[1]
             is_done_candidate = stopping_criteria(candidate_input_ids, None)
+            stop_time = time.time()
             
-            #  2. Use the first cascading model 
+            candidate_time = stop_time - start_time
+            num_generated_tokens = candidate_length
+            
+            my_output = candidate_verifier.get_continuation(candidate_input_ids=candidate_input_ids, candidate_logits=candidate_logits, input_ids=input_ids, is_done_candidate=is_done_candidate)
+            
+            # 2. Use the original model to obtain the next token logits given the candidate sequence. We obtain
+            # `candidate_length + 1` relevant logits from this process: in the event that all candidates are correct,
+            # we use this forward pass to also pick the subsequent logits in the original model.
+
+            start_time = time.time()
             
             # 2.1. Prepare the model inputs
             model_kwargs = _prepare_attention_mask(
@@ -5020,18 +5064,22 @@ class GenerationMixin:
                     ),
                     dim=0,
                 )
-            
-            model_inputs = first_cascade_model.prepare_inputs_for_generation(candidate_input_ids, **model_kwargs)
+
+            model_inputs = self.prepare_inputs_for_generation(candidate_input_ids, **model_kwargs)
             if "num_logits_to_keep" in model_inputs:
                 model_inputs["num_logits_to_keep"] = candidate_length + 1
-                
-            outputs = first_cascade_model.generate(
+
+            # 2.2. Run a forward pass on the candidate sequence
+            outputs = self(
                 **model_inputs,
                 output_attentions=output_attentions,
                 output_hidden_states=output_hidden_states,
             )
+            stop_time = time.time() 
+            oracle_time = stop_time - start_time
+            
 
-            # Process the new logits
+            # 2.3. Process the new logits
             new_logits = outputs.logits[:, -candidate_length - 1 :]  # excludes the input prompt if present
             next_token_logits = new_logits.clone()
             if len(logits_processor) > 0:
@@ -5041,78 +5089,64 @@ class GenerationMixin:
                 for i in range(candidate_length + 1):
                     new_logits[:, i, :] = logits_warper(candidate_input_ids[:, : cur_len + i], new_logits[:, i, :])
                     
-            # 3. Select the accepted tokens. Using the simplest algorithm
-            selected_tokens = new_logits.argmax(dim=-1)
-            candidate_new_tokens = candidate_input_ids[:, cur_len:]
-            n_matches = ((~(candidate_new_tokens == selected_tokens[:, :-1])).cumsum(dim=-1) < 1).sum()
+
+            # 3. Select the accepted tokens. There are two possible cases:
+            # Case 1: `do_sample=True` and we have logits for the candidates (originally from speculative decoding)
+            # 👉 Apply algorithm 1 from the speculative decoding paper (https://arxiv.org/pdf/2211.17192.pdf).
+            if do_sample and candidate_logits is not None:
+                valid_tokens, n_matches = _speculative_sampling(
+                    candidate_input_ids,
+                    candidate_logits,
+                    candidate_length,
+                    new_logits,
+                    is_done_candidate,
+                )
+
+            # Case 2: all other cases (originally from assisted generation) 👉 Compare the tokens selected from the
+            # original model logits with the candidate tokens. We can keep the candidate tokens until the first
+            # mismatch, or until the max length is reached.
+            else:
+
+                if do_sample:
+                    probs = new_logits.softmax(dim=-1)
+                    selected_tokens = torch.multinomial(probs[0, :, :], num_samples=1).squeeze(1)[None, :]
+                else:
+                    selected_tokens = new_logits.argmax(dim=-1)
+
+                candidate_new_tokens = candidate_input_ids[:, cur_len:]
+                n_matches = ((~(candidate_new_tokens == selected_tokens[:, :-1])).cumsum(dim=-1) < 1).sum()
+
+                # Ensure we don't generate beyond max_len or an EOS token
+                if is_done_candidate and n_matches == candidate_length:
+                    n_matches -= 1
+                valid_tokens = selected_tokens[:, : n_matches + 1]
+                num_valid_tokens = valid_tokens.shape[-1]
+
+
             
-            # Ensure we don't generate beyond max_len or an EOS token
-            # TODO: This should only be checked at the last stage if possible
-            if is_done_candidate and n_matches == candidate_length:
-                n_matches -= 1
-            valid_tokens = selected_tokens[:, : n_matches + 1]
-            num_valid_tokens = valid_tokens.shape[-1]
-            
-            
+            logger.info(f"candidate_time: {candidate_time}, oracle_time: {oracle_time}, generated_tokens: {num_generated_tokens}, accepted_tokens: {num_valid_tokens}")
+
+            # 4. Update variables according to the number of matching assistant tokens. Remember: the token generated
+            # by the model after the last candidate match is also valid, as it is generated from a correct sequence.
+            # Because of this last token, assisted generation search reduces to a normal greedy search/sample if there
+            # is no match.
+
             # 4.1. Get the valid continuation, after the matching tokens
             input_ids = torch.cat((input_ids, valid_tokens), dim=-1)
             if streamer is not None:
                 streamer.put(valid_tokens.cpu())
             new_cur_len = input_ids.shape[-1]
-            
+
             # 4.2. Discard past key values relative to unused assistant tokens
             new_cache_size = new_cur_len - 1
             outputs.past_key_values = _crop_past_key_values(self, outputs.past_key_values, new_cache_size)
-            
+
             # 5. Update the candidate generation strategy if needed
             candidate_generator.update_candidate_strategy(input_ids, new_logits, n_matches)
-            
-            if new_cur_len - start_len >= 10 or (is_done_candidate and n_matches == candidate_length):
-                # prepare the input for the next cascade model
-                
-                model_kwargs = _prepare_attention_mask(
-                    model_kwargs, input_ids.shape[1], self.config.is_encoder_decoder
-                )
-                model_kwargs = _prepare_token_type_ids(model_kwargs, input_ids.shape[1])
-
-                model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
-                
-                candidate_new_tokens = input_ids[:, start_len:]
-                candidate_length = candidate_new_tokens.shape[1]
-                outputs = self(
-                    **model_inputs,
-                    output_attentions=output_attentions,
-                    output_hidden_states=output_hidden_states,
-                )
-                # Process the new logits
-                new_logits = outputs.logits[:, -candidate_length - 1 :]  # excludes the input prompt if present
-                next_token_logits = new_logits.clone()
-                if len(logits_processor) > 0:
-                    for i in range(candidate_length + 1):
-                        new_logits[:, i, :] = logits_processor(input_ids[:, : start_len + i], new_logits[:, i, :])
-                if len(logits_warper) > 0:
-                    for i in range(candidate_length + 1):
-                        new_logits[:, i, :] = logits_warper(input_ids[:, : start_len + i], new_logits[:, i, :])
-                
-                selected_tokens = new_logits.argmax(dim=-1)
-                n_matches = ((~(candidate_new_tokens == selected_tokens[:, :-1])).cumsum(dim=-1) < 1).sum()
-                # TODO: this check is wrong, design logic for maxlength check later
-                if is_done_candidate and n_matches == candidate_length:
-                    n_matches -= 1
-                valid_tokens = selected_tokens[:, : n_matches + 1]
-                # num_valid_tokens = valid_tokens.shape[-1]
-                input_ids = torch.cat((input_ids, valid_tokens), dim=-1)
-                if streamer is not None:
-                    streamer.put(valid_tokens.cpu())
-                new_cur_len = input_ids.shape[-1]
-                
-                # Discard past key values relative to unused assistant tokens
-                new_cache_size = new_cur_len - 1
-                outputs.past_key_values = _crop_past_key_values(self, outputs.past_key_values, new_cache_size)
 
             if synced_gpus and this_peer_finished:
                 continue  # don't waste resources running the code we don't need
-            
+
             # Store scores, attentions and hidden_states when required
             # Assistant: modified to append one tuple element per token, as in the other generation methods.
             if return_dict_in_generate:
@@ -5125,7 +5159,7 @@ class GenerationMixin:
                     added_len = new_cur_len
                 else:
                     added_len = n_matches + 1
-            
+
                 if output_attentions:
                     if self.config.is_encoder_decoder:
                         cross_attentions = _split_model_outputs(
@@ -5155,19 +5189,19 @@ class GenerationMixin:
                         decoder_hidden_states = _split_model_outputs(
                             decoder_hidden_states, outputs.hidden_states, cur_len, added_len
                         )
-                        
+
             model_kwargs = self._update_model_kwargs_for_generation(
                 outputs,
                 model_kwargs,
                 is_encoder_decoder=self.config.is_encoder_decoder,
             )
-            
+
             unfinished_sequences = unfinished_sequences & ~stopping_criteria(input_ids, scores)
             this_peer_finished = unfinished_sequences.max() == 0
-            
+
         if streamer is not None:
             streamer.end()
-        
+
         if (
             hasattr(candidate_generator, "assistant_model")
             and candidate_generator.assistant_model.generation_config.num_assistant_tokens_schedule == "heuristic"
@@ -5175,7 +5209,6 @@ class GenerationMixin:
             candidate_generator.assistant_model.generation_config.num_assistant_tokens = (
                 candidate_generator.num_assistant_tokens
             )
-        
         if return_dict_in_generate:
             if self.config.is_encoder_decoder:
                 return GenerateEncoderDecoderOutput(
@@ -5200,19 +5233,6 @@ class GenerationMixin:
                 )
         else:
             return input_ids
-        
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
