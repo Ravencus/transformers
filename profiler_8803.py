@@ -52,8 +52,8 @@ if __name__ == "__main__":
     tokenizer = AutoTokenizer.from_pretrained(checkpoint)
     inputs = tokenizer(prompt, return_tensors="pt")
     model = AutoModelForCausalLM.from_pretrained(checkpoint)
-    assistant_model_1 = AutoModelForCausalLM.from_pretrained(assistant_checkpoint_1)
-    assistant_model_2 = AutoModelForCausalLM.from_pretrained(assistant_checkpoint_2)
+    # assistant_model_1 = AutoModelForCausalLM.from_pretrained(assistant_checkpoint_1)
+    # assistant_model_2 = AutoModelForCausalLM.from_pretrained(assistant_checkpoint_2)
     assistant_model = AutoModelForCausalLM.from_pretrained(assistant_model)
     
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
@@ -62,22 +62,23 @@ if __name__ == "__main__":
 
 
     inputs.to(device)
-    
-    assistant_model_1.to(device)
     model.to(device)
-    assistant_model_2.to(device)
-    assisted_time_2 = staged_assisted_generate_with_time(model, assistant_model_1, assistant_model_2, inputs)
     
-    # assistant_model.to(device)
+    # assistant_model_1.to(device)
 
-    # assisted_time_1 = assisted_generate_with_time(model, assistant_model, inputs)
+    # assistant_model_2.to(device)
+    # assisted_time_2 = staged_assisted_generate_with_time(model, assistant_model_1, assistant_model_2, inputs)
+    
+    assistant_model.to(device)
+
+    assisted_time_1 = assisted_generate_with_time(model, assistant_model, inputs)
     
     # raw_time = generate_with_time(model, inputs)
     # logger.info(f"raw generation time: {raw_time[1]}")
-    # logger.info(f"Assisted generation time 2: {assisted_time_2[1]}")
+    logger.info(f"Assisted generation time: {assisted_time_1[1]}")
     # log decoded outputs by tokenizers
     # logger.info(tokenizer.decode(raw_time[0][0]))
-    logger.info(tokenizer.decode(assisted_time_2[0][0]))
+    # logger.info(tokenizer.decode(assisted_time_2[0][0]))
     
     # use tokenizers to decode the outputs
     # logger.info(tokenizer.decode(raw_time[0][0]))

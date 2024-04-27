@@ -4832,7 +4832,7 @@ class GenerationMixin:
 
 
             
-            # logger.info(f"candidate_time: {candidate_time}, oracle_time: {oracle_time}, generated_tokens: {num_generated_tokens}, accepted_tokens: {num_valid_tokens}")
+            logger.info(f"candidate_time: {candidate_time}, oracle_time: {oracle_time}, generated_tokens: {num_generated_tokens}, accepted_tokens: {num_valid_tokens}")
 
             # 4. Update variables according to the number of matching assistant tokens. Remember: the token generated
             # by the model after the last candidate match is also valid, as it is generated from a correct sequence.

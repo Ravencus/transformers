@@ -167,3 +167,7 @@ tags
 
 # ruff
 .ruff_cache
+
+# sample test file
+profiler_8803.py
+
