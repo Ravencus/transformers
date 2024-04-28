@@ -181,9 +181,8 @@ class AssistedCandidateGenerator(CandidateGenerator):
 
         # 1. If it is not the first round of candidate generation, prepare the inputs based on the input_ids length
         # (which implicitly contains the number of accepted candidates from the previous round)
-        
         has_past_key_values = self.assistant_kwargs.get("past_key_values", None) is not None
-        if has_past_key_values and (self.assistant_model.__class__.__name__!="MedusaModelLlama"):
+        if has_past_key_values:
             new_cache_size = new_cur_len - 1
             self.assistant_kwargs["past_key_values"] = _crop_past_key_values(
                 self.assistant_model, self.assistant_kwargs["past_key_values"], new_cache_size - 1
@@ -209,7 +208,7 @@ class AssistedCandidateGenerator(CandidateGenerator):
         self.assistant_kwargs["past_key_values"] = assistant_output.past_key_values
 
         # 4. Prepare variables for output
-        candidate_logits = None#torch.stack(assistant_output.scores, dim=1)
+        candidate_logits = torch.stack(assistant_output.scores, dim=1)
         candidate_ids = assistant_output.sequences
         return candidate_ids, candidate_logits
 
