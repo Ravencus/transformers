@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from .modeling_llama_kv import LlamaForCausalLM as KVLlamaForCausalLM
+from ..medusa.modeling_llama_kv import LlamaForCausalLM as KVLlamaForCausalLM
 # import transformers
 
 # # monkey patch
@@ -9,9 +9,9 @@ from .modeling_llama_kv import LlamaForCausalLM as KVLlamaForCausalLM
 from ..generation import GenerationMixin
 from ..modeling_utils import PreTrainedModel
 from ..configuration_utils import PretrainedConfig
-from .utils import *
-from .kv_cache import initialize_past_key_values
-from .medusa_choices import *
+from ..medusa.utils import *
+from ..medusa.kv_cache import initialize_past_key_values
+from ..medusa.medusa_choices import *
 from ..models.auto import AutoTokenizer, AutoConfig
 
 import os

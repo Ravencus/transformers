@@ -1784,6 +1784,8 @@ class GenerationMixin:
                     past_key_values_data,
                     current_length_data,
                 )
+                if self.tokenizer.eos_token_id in input_ids[0, input_len:]:
+                    break
             result= GenerateEncoderDecoderOutput(
                     sequences=input_ids,
                     scores=None,

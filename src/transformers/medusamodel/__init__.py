@@ -12,16 +12,4 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .kv_cache import initialize_past_key_values
-from .medusa_choices import mc_sim_7b_63
-
-from .utils import(
-    generate_medusa_buffers,
-    reset_medusa_mode,
-    initialize_medusa,
-    generate_candidates,
-    tree_decoding,
-    evaluate_posterior,
-    update_inference_inputs,
-)
-
+from .medusa_model import MedusaModel

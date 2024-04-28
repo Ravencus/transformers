@@ -60,10 +60,9 @@ class KVCache:
         Returns:
             torch.Tensor: The data tensor after concatenation up to the current length.
         """
-        if(self.data.shape[dim]>self.current_length+tensor.shape[dim]):
-            dst = self.data.narrow(dim, self.current_length, tensor.shape[dim])
-        else:
-            dst = self.data.narrow(dim, self.current_length, self.data.shape[dim]-self.current_length)
+        
+        dst = self.data.narrow(dim, self.current_length, tensor.shape[dim])
+        
         dst.copy_(tensor)
         self.current_length.add_(tensor.shape[dim])
         return torch.narrow(self.data, 2, 0, self.current_length)
