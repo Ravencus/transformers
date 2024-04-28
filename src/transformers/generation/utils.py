@@ -42,19 +42,6 @@ from ..models.auto import (
     MODEL_FOR_VISION_2_SEQ_MAPPING,
 )
 from ..utils import ModelOutput, is_accelerate_available, is_torchdynamo_compiling, logging
-# medusa utils
-from ..medusa.utils import(
-    generate_medusa_buffers,
-    reset_medusa_mode,
-    initialize_medusa,
-    generate_candidates,
-    tree_decoding,
-    evaluate_posterior,
-    update_inference_inputs,
-)
-from ..medusa.kv_cache import initialize_past_key_values
-from ..medusa.medusa_choices import mc_sim_7b_63
-
 from .beam_constraints import DisjunctiveConstraint, PhrasalConstraint
 from .beam_search import BeamScorer, BeamSearchScorer, ConstrainedBeamSearchScorer
 from .candidate_generator import (
@@ -1547,9 +1534,8 @@ class GenerationMixin:
         self._validate_generated_length(generation_config, input_ids_length, has_default_max_length)
 
         # 7. determine generation mode
-        gen_mode_kwargs={"medusa_decoding": self.__class__.__name__=="MedusaModelLlama"}
-        
-        generation_mode = generation_config.get_generation_mode(assistant_model, secondary_assistant_model,**gen_mode_kwargs)
+        generation_mode = generation_config.get_generation_mode(assistant_model, secondary_assistant_model)
+
         if streamer is not None and (generation_config.num_beams > 1):
             raise ValueError(
                 "`streamer` cannot be used with beam search (yet!). Make sure that `num_beams` is set to 1."
@@ -1672,123 +1658,7 @@ class GenerationMixin:
                 **model_kwargs,
             )
             
-        if generation_mode == GenerationMode.MEDUSA_DECODING:
-            if batch_size > 1:
-                raise ValueError("Medusa decoding is only supported for batch_size = 1")
-            input_ids = input_ids.clone()
-            medusa_choices=mc_sim_7b_63
-            scores = ()
-            if hasattr(self, "medusa_choices") and self.medusa_choices == medusa_choices:
-            # Load the cached medusa buffer
-                medusa_buffers = self.medusa_buffers
-            else:
-                # Initialize the medusa buffer
-                medusa_buffers = generate_medusa_buffers(
-                    medusa_choices, device=self.base_model.device
-                )
-            self.medusa_buffers = medusa_buffers
-            self.medusa_choices = medusa_choices
-
-            if hasattr(self, "past_key_values"):
-                past_key_values = self.past_key_values
-                past_key_values_data = self.past_key_values_data
-                current_length_data = self.current_length_data
-                # Reset the past key and value states
-                current_length_data.zero_()
-            else:
-                (
-                    past_key_values,
-                    past_key_values_data,
-                    current_length_data,
-                ) = initialize_past_key_values(self.base_model)
-                self.past_key_values = past_key_values
-                self.past_key_values_data = past_key_values_data
-                self.current_length_data = current_length_data
-            input_len = input_ids.shape[1]
-
-            reset_medusa_mode(self)
-            # Initialize tree attention mask and process prefill tokens
-            medusa_logits, logits = initialize_medusa(
-                input_ids, self, medusa_buffers["medusa_attn_mask"], past_key_values
-            )
-
-            new_token = 0
-            last_round_token = 0
-            if model_kwargs.get("temperature") is None:
-                temperature=0.0
-            else:
-                temperature=model_kwargs["temperature"]
-            if model_kwargs.get("posterior_threshold") is None:
-                posterior_threshold=0.09
-            else:
-                posterior_threshold=model_kwargs["posterior_threshold"]
-            if model_kwargs.get("posterior_alpha") is None:
-                posterior_alpha=0.3
-            else:
-                posterior_alpha=model_kwargs["posterior_alpha"]
-            if model_kwargs.get("top_p") is None:
-                top_p=0.8
-            else:
-                top_p=model_kwargs["top_p"]
-            if model_kwargs.get("sampling") is None:
-                sampling ='typical'
-            else:
-                sampling =model_kwargs["sampling"]
-            if model_kwargs.get("fast") is None:
-                fast =True
-            else:
-                fast =model_kwargs["fast"]
-
-            
-            for idx in range(generation_config.max_length):
-                # Generate candidates with topk predictions from Medusa heads
-                candidates, tree_candidates = generate_candidates(
-                    medusa_logits,
-                    logits,
-                    medusa_buffers["tree_indices"],
-                    medusa_buffers["retrieve_indices"],
-                    temperature=temperature,
-                    posterior_alpha=posterior_alpha,
-                    posterior_threshold=posterior_threshold,
-                    top_p=top_p,
-                    sampling=sampling,
-                    fast=fast,
-                )
-
-                # Use tree attention to verify the candidates and get predictions
-                medusa_logits, logits, outputs = tree_decoding(
-                    self,
-                    tree_candidates,
-                    past_key_values,
-                    medusa_buffers["medusa_position_ids"],
-                    input_ids,
-                    medusa_buffers["retrieve_indices"],
-                )
-
-                # Evaluate the posterior of the candidates to select the accepted candidate prefix
-                best_candidate, accept_length = evaluate_posterior(
-                    logits, candidates, temperature, posterior_threshold, posterior_alpha, top_p=top_p, sampling=sampling, fast=fast
-                )
-
-                # Update the input_ids and logits
-                input_ids, logits, medusa_logits, new_token = update_inference_inputs(
-                    input_ids,
-                    candidates,
-                    best_candidate,
-                    accept_length,
-                    medusa_buffers["retrieve_indices"],
-                    outputs,
-                    logits,
-                    medusa_logits,
-                    new_token,
-                    past_key_values_data,
-                    current_length_data,
-                )
-            result= GenerateEncoderDecoderOutput(
-                    sequences=input_ids,
-                    scores=None,
-                    past_key_values=None,
-                )
+                
             
         
         if generation_mode == GenerationMode.GREEDY_SEARCH:
