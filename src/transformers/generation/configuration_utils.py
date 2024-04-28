@@ -60,6 +60,7 @@ class GenerationMode(ExplicitEnum):
     
     
     STAGED_SPECULATION = "staged_speculation" # 8803 staged feature
+    MEDUSA_DECODING="medusa_decoding" # 8803 staged feature
 
 
 class GenerationConfig(PushToHubMixin):
@@ -409,7 +410,7 @@ class GenerationConfig(PushToHubMixin):
     def __repr__(self):
         return f"{self.__class__.__name__} {self.to_json_string(ignore_metadata=True)}"
 
-    def get_generation_mode(self, assistant_model: Optional["PreTrainedModel"] = None, secondary_assistant_model: Optional["PreTrainedModel"] = None) -> GenerationMode:
+    def get_generation_mode(self, assistant_model: Optional["PreTrainedModel"] = None, secondary_assistant_model: Optional["PreTrainedModel"] = None, **gen_mode_kwargs) -> GenerationMode:
         """
         Returns the generation mode triggered by the [`GenerationConfig`] instance.
 
@@ -423,6 +424,7 @@ class GenerationConfig(PushToHubMixin):
         """
         # TODO joao: find out a way of not depending on external fields (e.g. `assistant_model`), then make this a
         # property and part of the `__repr__`
+
         if self.constraints is not None or self.force_words_ids is not None:
             generation_mode = GenerationMode.CONSTRAINED_BEAM_SEARCH
         elif self.num_beams == 1:
@@ -460,6 +462,9 @@ class GenerationConfig(PushToHubMixin):
         
         if secondary_assistant_model is not None:
             generation_mode = GenerationMode.STAGED_SPECULATION
+
+        if gen_mode_kwargs["medusa_decoding"]==True:
+            generation_mode = GenerationMode.MEDUSA_DECODING
                 
                 
         return generation_mode
