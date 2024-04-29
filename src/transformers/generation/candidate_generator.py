@@ -176,11 +176,17 @@ class AssistedCandidateGenerator(CandidateGenerator):
         new_cur_len = input_ids.shape[-1]
         max_new_tokens = min(int(self.num_assistant_tokens), self.generation_config.max_length - new_cur_len - 1)
         min_new_tokens = max(min(max_new_tokens, self.main_model_min_length - new_cur_len), 0)
-        if max_new_tokens == 0:
+        
+        # changing == 0 to <= 0
+        # can self.generation_config.max_length be less than new_cur_len + 1?
+        # 
+        if max_new_tokens <= 0: 
             return input_ids, None
 
         # 1. If it is not the first round of candidate generation, prepare the inputs based on the input_ids length
         # (which implicitly contains the number of accepted candidates from the previous round)
+        
+        # # not needed in staged speculation, kept for compatibility with the original assisted decoding
         has_past_key_values = self.assistant_kwargs.get("past_key_values", None) is not None
         if has_past_key_values:
             new_cache_size = new_cur_len - 1
@@ -533,8 +539,9 @@ class CascadeCandidateVerifier(CandidateVerifier):
         cur_len = input_ids.shape[-1]
         num_generated_tokens = candidate_length
         
-        if self.verifier_kwargs.get("past_key_values", None) is not None:
-            self.verifier_kwargs["past_key_values"] = _crop_past_key_values(self, self.verifier_kwargs["past_key_values"], cur_len - 1)
+        # # not needed due to the new kv cache management in the SpeculationScheduler class
+        # if self.verifier_kwargs.get("past_key_values", None) is not None:
+        #     self.verifier_kwargs["past_key_values"] = _crop_past_key_values(self, self.verifier_kwargs["past_key_values"], cur_len - 1)
         
         self.verifier_kwargs = _prepare_attention_mask(
                 self.verifier_kwargs, candidate_input_ids.shape[1], self.verifier_model.config.is_encoder_decoder
@@ -582,8 +589,9 @@ class CascadeCandidateVerifier(CandidateVerifier):
         input_ids = torch.cat((input_ids, valid_tokens), dim=-1)
         new_cur_len = input_ids.shape[-1]
         new_cache_size = new_cur_len - 1
-        outputs.past_key_values = _crop_past_key_values(self, outputs.past_key_values, new_cache_size)
-        self.verifier_kwargs = self.verifier_model._update_model_kwargs_for_generation(
-            outputs, self.verifier_kwargs, is_encoder_decoder=self.verifier_model.config.is_encoder_decoder
-        )
-        return input_ids, new_logits, n_matches, num_valid_tokens
+        # # KV cache management is moved to the SpeculationScheduler class for unified handling
+        # outputs.past_key_values = _crop_past_key_values(self, outputs.past_key_values, new_cache_size)
+        # self.verifier_kwargs = self.verifier_model._update_model_kwargs_for_generation(
+        #     outputs, self.verifier_kwargs, is_encoder_decoder=self.verifier_model.config.is_encoder_decoder
+        # )
+        return input_ids, new_logits, n_matches, num_valid_tokens, new_cache_size

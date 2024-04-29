@@ -31,21 +31,25 @@ if __name__ == "__main__":
     from transformers.utils import logging
     logging.set_verbosity_info()
     logger = logging.get_logger("transformers")
-    checkpoint = "EleutherAI/pythia-2.8b-deduped"
-    assistant_model = "EleutherAI/pythia-160m-deduped"
-    tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+    model_path = "EleutherAI/pythia-2.8b-deduped"
+    assistant_model_1_path = "EleutherAI/pythia-160m-deduped"
+    assistant_model_2_path = "EleutherAI/pythia-1.4b-deduped"
+    tokenizer = AutoTokenizer.from_pretrained(model_path)
     prompt = "Say a long sentance."
     inputs = tokenizer(prompt, return_tensors="pt")
-    model = AutoModelForCausalLM.from_pretrained(checkpoint)
-    assistant_model = AutoModelForCausalLM.from_pretrained(assistant_model)
+    model = AutoModelForCausalLM.from_pretrained(model_path)
+    assistant_model_1 = AutoModelForCausalLM.from_pretrained(assistant_model_1_path)
+    assistant_model_2 = AutoModelForCausalLM.from_pretrained(assistant_model_2_path)
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
     inputs.to(device)
     model.to(device)
-    assistant_model.to(device)
+    assistant_model_1.to(device)
+    assistant_model_2.to(device)
     
     start_time = time.time()
-    # outputs = model.generate(**inputs, assistant_model=assistant_model, verifier_list=[model])
-    outputs = model.generate(**inputs, assistant_model=assistant_model)
+    outputs = model.generate(**inputs, assistant_model=assistant_model_1, verifier_list=[assistant_model_2, model], max_new_tokens=500)
+    # outputs = model.generate(**inputs, assistant_model=assistant_model_2, verifier_list=[model])
+    # outputs = model.generate(**inputs, assistant_model=assistant_model)
     duration = time.time() - start_time
     
     print(tokenizer.decode(outputs[0]))
