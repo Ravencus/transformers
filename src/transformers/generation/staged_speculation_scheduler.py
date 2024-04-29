@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple, List, Union
 import torch
 from ..utils import logging
 logger = logging.get_logger(__name__)
-
+import time
 if TYPE_CHECKING:
     from ..modeling_utils import PreTrainedModel
     from .configuration_utils import GenerationConfig
@@ -45,6 +45,8 @@ class SpeculationScheduler:
         device = input_ids.device
         self.input_ids = input_ids # self.input_ids is verified by the last level model
         self.staged_input_ids = input_ids # self.staged_input_ids is verified by intermediate models but not the last level model
+        # TODO: should each verifier keep a staged_input_ids from itself?
+        # Likely to ease the scheduling algorithm
         self.new_candidate_length = draft_model.generation_config.num_assistant_tokens
         self.logits_processor = logits_processor
         self.stopping_criteria = stopping_criteria
@@ -97,14 +99,20 @@ class SpeculationScheduler:
         is_raising_level = False # init to be true to compare against self.input_ids
         while not this_peer_finished:
             # logger.info(f"start new candidate generation, current level: {self.verifier_level}, staged length: {self.staged_input_ids.shape[1]}, input length: {self.input_ids.shape[1]}")
+            gen_start = time.time()
             candidate_input_ids, candidate_logits = self._generate_candidates()
+            gen_time = time.time() - gen_start
             is_done_candidate = self.stopping_criteria(candidate_input_ids, None)
             num_generated_candidates = candidate_input_ids.shape[1] - self.staged_input_ids.shape[1]
+            val_start = time.time()
             new_logits, n_matches, num_valid_tokens, new_cache_size = self._verify_candidates(candidate_input_ids, is_done_candidate, is_raising_level)
+            val_time = time.time() - val_start
+            minor_start = time.time()
             self._crop_all_past_key_values(new_cache_size)            
             self._update_new_candidate_length(n_matches)
             is_raising_level = self._update_verifier_level()
-            logger.info(f"generated_candidates, new valid tokens, raising level: {num_generated_candidates}, {num_valid_tokens}, {is_raising_level}")
+            minor_time = time.time() - minor_start
+            logger.info(f"{num_generated_candidates}, {num_valid_tokens}, {is_raising_level}, {gen_time}, {val_time}, {minor_time}")
             unfinished_sequences = unfinished_sequences & ~self.stopping_criteria(self.input_ids, None)
             this_peer_finished = unfinished_sequences.max() == 0
         
@@ -169,6 +177,8 @@ class SpeculationScheduler:
         return candidate_input_ids, candidate_logits
     
     def _crop_all_past_key_values(self, new_cache_size):
+        # TODO: this could be moved to the inside of the verifier_class
+        # so that developers can customize the past_key_values cropping
         # crop past_key_values for self.candidate_generator and all verifiers
         
         # crop candidate generator past_key_values
