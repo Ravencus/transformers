@@ -32,8 +32,8 @@ if __name__ == "__main__":
     logging.set_verbosity_info()
     logger = logging.get_logger("transformers")
     model_path = "EleutherAI/pythia-12b-deduped"
-    assistant_model_1_path = "EleutherAI/pythia-160m-deduped"
-    assistant_model_2_path = "EleutherAI/pythia-1.4b-deduped"
+    assistant_model_1_path = "EleutherAI/pythia-1.4b-deduped"
+    assistant_model_2_path = "EleutherAI/pythia-160m-deduped"
     tokenizer = AutoTokenizer.from_pretrained(model_path)
     prompt = "Help me construct a catchy, yet scientifically accurate, headline for an article on the latest discovery in renewable bio-energy, while carefully handling the ethical dilemmas surrounding bio-energy sources. Propose 4 options."
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
