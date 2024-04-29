@@ -96,17 +96,15 @@ class SpeculationScheduler:
         this_peer_finished = False
         is_raising_level = False # init to be true to compare against self.input_ids
         while not this_peer_finished:
-            logger.info(f"start new candidate generation, current level: {self.verifier_level}, new candidate length: {self.new_candidate_length}, staged length: {self.staged_input_ids.shape[1]}, input length: {self.input_ids.shape[1]}")
+            # logger.info(f"start new candidate generation, current level: {self.verifier_level}, staged length: {self.staged_input_ids.shape[1]}, input length: {self.input_ids.shape[1]}")
             candidate_input_ids, candidate_logits = self._generate_candidates()
             is_done_candidate = self.stopping_criteria(candidate_input_ids, None)
             num_generated_candidates = candidate_input_ids.shape[1] - self.staged_input_ids.shape[1]
-            logger.info(f"generated {num_generated_candidates} candidates")
             new_logits, n_matches, num_valid_tokens, new_cache_size = self._verify_candidates(candidate_input_ids, is_done_candidate, is_raising_level)
-            logger.info(f"verified {n_matches} candidates")
             self._crop_all_past_key_values(new_cache_size)            
             self._update_new_candidate_length(n_matches)
             is_raising_level = self._update_verifier_level()
-            logger.info(f"raising level: {is_raising_level}")
+            logger.info(f"generated_candidates, new valid tokens, raising level: {num_generated_candidates}, {num_valid_tokens}, {is_raising_level}")
             unfinished_sequences = unfinished_sequences & ~self.stopping_criteria(self.input_ids, None)
             this_peer_finished = unfinished_sequences.max() == 0
         
@@ -115,11 +113,13 @@ class SpeculationScheduler:
 
     def _update_new_candidate_length(self, num_matches: int):
         # AIMD algorithm
+        old_candidate_length = self.new_candidate_length
         if num_matches == int(self.new_candidate_length):
             self.new_candidate_length += 2.0
         else:
-            self.new_candidate_length = max(1.0, int(self.new_candidate_length / 2.0))            
+            self.new_candidate_length = max(1.0, int(self.new_candidate_length / 2.0))
         self.candidate_generator.set_num_assistant_tokens(self.new_candidate_length)
+        logger.info(f"old candidate length: {old_candidate_length}, new candidate length: {self.new_candidate_length}")
     
     def _update_verifier_level(self):
         # return if the level is raising

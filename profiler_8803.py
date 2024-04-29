@@ -35,7 +35,7 @@ if __name__ == "__main__":
     assistant_model_1_path = "EleutherAI/pythia-160m-deduped"
     assistant_model_2_path = "EleutherAI/pythia-1.4b-deduped"
     tokenizer = AutoTokenizer.from_pretrained(model_path)
-    prompt = "Say a long sentance."
+    prompt = "What date is today?"
     inputs = tokenizer(prompt, return_tensors="pt")
     model = AutoModelForCausalLM.from_pretrained(model_path)
     assistant_model_1 = AutoModelForCausalLM.from_pretrained(assistant_model_1_path)
@@ -47,7 +47,7 @@ if __name__ == "__main__":
     assistant_model_2.to(device)
     
     start_time = time.time()
-    outputs = model.generate(**inputs, assistant_model=assistant_model_1, verifier_list=[assistant_model_2, model], max_new_tokens=500)
+    outputs = model.generate(**inputs, assistant_model=assistant_model_1, verifier_list=[model], max_new_tokens=50)
     # outputs = model.generate(**inputs, assistant_model=assistant_model_2, verifier_list=[model])
     # outputs = model.generate(**inputs, assistant_model=assistant_model)
     duration = time.time() - start_time

@@ -1629,6 +1629,7 @@ class GenerationMixin:
             result = self._staged_assisted_decoding(
                 input_ids,
                 draft_model=assistant_model,
+                generation_config=generation_config,
                 # do_sample=generation_config.do_sample,
                 verifier_list=verifier_list,
                 logits_processor=prepared_logits_processor,
@@ -4932,6 +4933,7 @@ class GenerationMixin:
         input_ids: torch.LongTensor,
         draft_model: Optional["PreTrainedModel"] = None,
         verifier_list: list["PreTrainedModel"] = None,
+        generation_config: Optional[GenerationConfig] = None,
         do_sample: bool = False,
         logits_processor: Optional[LogitsProcessorList] = None,
         logits_warper: Optional[LogitsProcessorList] = None,
@@ -5004,7 +5006,7 @@ class GenerationMixin:
 
         scheduler = SpeculationScheduler(
             input_ids=input_ids,
-            generation_config=self.generation_config,
+            generation_config=generation_config,
             logits_processor=logits_processor,
             stopping_criteria=stopping_criteria,
             draft_model=draft_model,
