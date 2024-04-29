@@ -18,7 +18,7 @@ import copy
 import json
 import os
 import warnings
-from typing import TYPE_CHECKING, Any, Dict, Optional, Union
+from typing import TYPE_CHECKING, Any, Dict, Optional, Union, List
 
 from .. import __version__
 from ..configuration_utils import PretrainedConfig
@@ -409,7 +409,7 @@ class GenerationConfig(PushToHubMixin):
     def __repr__(self):
         return f"{self.__class__.__name__} {self.to_json_string(ignore_metadata=True)}"
 
-    def get_generation_mode(self, assistant_model: Optional["PreTrainedModel"] = None, secondary_assistant_model: Optional["PreTrainedModel"] = None) -> GenerationMode:
+    def get_generation_mode(self, assistant_model: Optional["PreTrainedModel"] = None, verifier_list: Optional[List["PreTrainedModel"]] = None) -> GenerationMode:
         """
         Returns the generation mode triggered by the [`GenerationConfig`] instance.
 
@@ -458,9 +458,9 @@ class GenerationConfig(PushToHubMixin):
                 
         # 2-stage speculative generation
         
-        if secondary_assistant_model is not None:
+        if verifier_list is not None:
             generation_mode = GenerationMode.STAGED_SPECULATION
-                
+            print("Staged Speculation Generation")
                 
         return generation_mode
 

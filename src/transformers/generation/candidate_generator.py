@@ -236,6 +236,9 @@ class AssistedCandidateGenerator(CandidateGenerator):
                 self.num_assistant_tokens += 2.0
             else:
                 self.num_assistant_tokens = max(1.0, self.num_assistant_tokens - 1.0)
+                
+    def set_num_assistant_tokens(self, num_assistant_tokens: int):
+        self.num_assistant_tokens = num_assistant_tokens
 
 class PromptLookupCandidateGenerator(CandidateGenerator):
     """
@@ -523,10 +526,9 @@ class CascadeCandidateVerifier(CandidateVerifier):
         self.output_hidden_states = self.generation_config.output_hidden_states
         self.return_dict_in_generate = self.generation_config.return_dict_in_generate
         
-    def get_continuation(self, candidate_input_ids: torch.LongTensor, candidate_logits: torch.FloatTensor, input_ids: torch.LongTensor, is_done_candidate: bool) -> torch.LongTensor:
+    def get_continuation(self, candidate_input_ids: torch.LongTensor, input_ids: torch.LongTensor, is_done_candidate: bool):
         candidate_input_ids = candidate_input_ids.to(self.verifier_model.device)
-        if candidate_logits is not None:
-                candidate_logits = candidate_logits.to(self.verifier_model.device)
+
         candidate_length = candidate_input_ids.shape[1] - input_ids.shape[1]
         cur_len = input_ids.shape[-1]
         num_generated_tokens = candidate_length
@@ -584,4 +586,4 @@ class CascadeCandidateVerifier(CandidateVerifier):
         self.verifier_kwargs = self.verifier_model._update_model_kwargs_for_generation(
             outputs, self.verifier_kwargs, is_encoder_decoder=self.verifier_model.config.is_encoder_decoder
         )
-        return input_ids, new_logits, n_matches
+        return input_ids, new_logits, n_matches, num_valid_tokens
