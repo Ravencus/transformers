@@ -44,9 +44,7 @@ class SpeculationScheduler:
         ):
         device = input_ids.device
         self.input_ids = input_ids # self.input_ids is verified by the last level model
-        self.staged_input_ids = input_ids # self.staged_input_ids is verified by intermediate models but not the last level model
-        # TODO: should each verifier keep a staged_input_ids from itself?
-        # Likely to ease the scheduling algorithm
+        self.staged_input_ids = input_ids.clone()
         self.new_candidate_length = draft_model.generation_config.num_assistant_tokens
         self.logits_processor = logits_processor
         self.stopping_criteria = stopping_criteria
@@ -96,39 +94,72 @@ class SpeculationScheduler:
         batch_size, cur_len = self.input_ids.shape
         unfinished_sequences = torch.ones(batch_size, dtype=torch.long, device=self.input_ids.device)
         this_peer_finished = False
-        is_raising_level = False # init to be true to compare against self.input_ids
         while not this_peer_finished:
-            # logger.info(f"start new candidate generation, current level: {self.verifier_level}, staged length: {self.staged_input_ids.shape[1]}, input length: {self.input_ids.shape[1]}")
-            gen_start = time.time()
+            logger.info("---------------------------------")
             candidate_input_ids, candidate_logits = self._generate_candidates()
-            gen_time = time.time() - gen_start
+
             is_done_candidate = self.stopping_criteria(candidate_input_ids, None)
             num_generated_candidates = candidate_input_ids.shape[1] - self.staged_input_ids.shape[1]
-            val_start = time.time()
-            new_logits, n_matches, num_valid_tokens, new_cache_size = self._verify_candidates(candidate_input_ids, is_done_candidate, is_raising_level)
-            val_time = time.time() - val_start
-            minor_start = time.time()
-            self._crop_all_past_key_values(new_cache_size)            
-            self._update_new_candidate_length(n_matches)
-            is_raising_level = self._update_verifier_level()
-            minor_time = time.time() - minor_start
-            logger.info(f"{num_generated_candidates}, {num_valid_tokens}, {is_raising_level}, {gen_time}, {val_time}, {minor_time}")
+
+            logger.info(f"gen_tokens: {num_generated_candidates}")
+            raise_level = True
+            self.verifier_level = 0
+            while raise_level:
+                verified_input_ids, new_logits, n_matches, num_valid_tokens, new_cache_size = self._verify_candidates(candidate_input_ids, is_done_candidate)
+
+                logger.info(f"lv{self.verifier_level}: +{num_valid_tokens}")
+                if self.verifier_level == self.verifier_length - 1:
+                    self.input_ids = verified_input_ids
+                raise_level = (self.verifier_list[self.verifier_level].staged_input_ids.shape[1] - self.input_ids.shape[1]) >= self.verifier_list[self.verifier_level].generation_limit
+                self._update_new_candidate_length(n_matches)
+                candidate_input_ids = verified_input_ids
+                if raise_level:
+                    self.verifier_level += 1
+                else:
+                    break
+                
+            self._crop_all_past_key_values(new_cache_size)
+            # update all staged_input_ids for lower level verifiers
+            for i in range(self.verifier_level):
+                self.verifier_list[i].staged_input_ids = verified_input_ids
+            
+
+
             unfinished_sequences = unfinished_sequences & ~self.stopping_criteria(self.input_ids, None)
             this_peer_finished = unfinished_sequences.max() == 0
-        
+            # logger.info(f"-ending-")
+            # logger.info(f"self.input_ids: {self.input_ids}")
+            # logger.info(f"self.staged_input_ids: {self.staged_input_ids}")
+            # logger.info(f"verifier_1_staged: {self.verifier_list[0].staged_input_ids}")
+            # logger.info(f"verifier_2_staged: {self.verifier_list[1].staged_input_ids}")
+            logger.info("---------------------------------")
         return self.input_ids
             
 
     def _update_new_candidate_length(self, num_matches: int):
         # AIMD algorithm
-        old_candidate_length = self.new_candidate_length
-        if num_matches == int(self.new_candidate_length):
-            self.new_candidate_length += 2.0
+        if self.verifier_level == 0:
+            old_candidate_length = self.new_candidate_length
+            if num_matches == int(self.new_candidate_length):
+                self.new_candidate_length += 2.0
+            else:
+                self.new_candidate_length = max(1.0, int(self.new_candidate_length / 2.0))
+            self.candidate_generator.set_num_assistant_tokens(self.new_candidate_length)
+            logger.info("updating candidate generator: {} -> {}".format(old_candidate_length, self.new_candidate_length))
+            
         else:
-            self.new_candidate_length = max(1.0, int(self.new_candidate_length / 2.0))
-        self.candidate_generator.set_num_assistant_tokens(self.new_candidate_length)
-        logger.info(f"old candidate length: {old_candidate_length}, new candidate length: {self.new_candidate_length}")
+            old_limit = self.verifier_list[self.verifier_level - 1].generation_limit
+            if num_matches == int(self.verifier_list[self.verifier_level - 1].generation_limit + 1):
+                self.verifier_list[self.verifier_level - 1].generation_limit += 2.0
+            else:
+                self.verifier_list[self.verifier_level - 1].generation_limit = max(1.0, int(self.verifier_list[self.verifier_level - 1].generation_limit / 2.0))
+                
+            # also sync the candidate generator with the verifier
+            self.new_candidate_length = self.verifier_list[self.verifier_level - 1].generation_limit
+            self.candidate_generator.set_num_assistant_tokens(self.new_candidate_length)
+            logger.info("updating verifier at level {}: {} -> {}".format(self.verifier_level - 1, old_limit, self.verifier_list[self.verifier_level - 1].generation_limit))
     
+    # deprecated
     def _update_verifier_level(self):
         # return if the level is raising
         # if true, then the next verifier should compare against self.input_ids
@@ -155,22 +186,13 @@ class SpeculationScheduler:
             return False
         
     
-    def _verify_candidates(self, candidate_input_ids: torch.LongTensor, is_done_candidate: bool, is_raising_level: bool):
-        if is_raising_level:
-            verified_input_ids, new_logits, n_matches, num_valid_tokens, new_cache_size = self.verifier_list[self.verifier_level].get_continuation(
-                candidate_input_ids, self.input_ids, is_done_candidate)
-        else:
-            verified_input_ids, new_logits, n_matches, num_valid_tokens, new_cache_size = self.verifier_list[self.verifier_level].get_continuation(
-                candidate_input_ids, self.staged_input_ids, is_done_candidate)
-        
-        # stage the temporary results
+    def _verify_candidates(self, candidate_input_ids: torch.LongTensor, is_done_candidate: bool):
+
+        verified_input_ids, new_logits, n_matches, num_valid_tokens, new_cache_size = self.verifier_list[self.verifier_level].get_continuation(
+            candidate_input_ids, self.verifier_list[self.verifier_level].staged_input_ids, is_done_candidate)
         self.staged_input_ids = verified_input_ids
-        
-        # if this is the last level verifier, we can update the input_ids
-        if self.verifier_level == self.verifier_length - 1:
-            self.input_ids = verified_input_ids
-        
-        return new_logits, n_matches, num_valid_tokens, new_cache_size
+
+        return verified_input_ids, new_logits, n_matches, num_valid_tokens, new_cache_size
     
     def _generate_candidates(self):
         candidate_input_ids, candidate_logits = self.candidate_generator.get_candidates(self.staged_input_ids) # always generate based on staged results
@@ -197,5 +219,7 @@ class SpeculationScheduler:
                     verifier.verifier_kwargs["past_key_values"],
                     new_cache_size,
                 )
-        
+    
+    def _crop_staged_inputs(self, new_staged_len):
+        pass
     

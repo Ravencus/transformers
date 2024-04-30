@@ -17,7 +17,6 @@ import copy
 from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
 
 
-
 import torch
 
 from ..cache_utils import DynamicCache
@@ -475,7 +474,8 @@ class CascadeCandidateVerifier(CandidateVerifier):
             inputs_tensor = inputs_tensor.to(device)
         
         self.config = verifier_model.config
-        
+        self.staged_input_ids = input_ids
+        self.generation_limit = 5
         # prepare the verifier model and starting sequence
         self.verifier_model = verifier_model
         # self.num_verifier_tokens = verifier_model.generation_config.num_verifier_tokens
@@ -532,13 +532,14 @@ class CascadeCandidateVerifier(CandidateVerifier):
         self.output_hidden_states = self.generation_config.output_hidden_states
         self.return_dict_in_generate = self.generation_config.return_dict_in_generate
         
+        
     def get_continuation(self, candidate_input_ids: torch.LongTensor, input_ids: torch.LongTensor, is_done_candidate: bool):
         candidate_input_ids = candidate_input_ids.to(self.verifier_model.device)
 
         candidate_length = candidate_input_ids.shape[1] - input_ids.shape[1]
         cur_len = input_ids.shape[-1]
         num_generated_tokens = candidate_length
-        
+        # logger.info(f"verifying: {candidate_input_ids[:, -candidate_length:]}")
         # # not needed due to the new kv cache management in the SpeculationScheduler class
         # if self.verifier_kwargs.get("past_key_values", None) is not None:
         #     self.verifier_kwargs["past_key_values"] = _crop_past_key_values(self, self.verifier_kwargs["past_key_values"], cur_len - 1)
@@ -587,6 +588,7 @@ class CascadeCandidateVerifier(CandidateVerifier):
         num_valid_tokens = valid_tokens.shape[-1]
         
         input_ids = torch.cat((input_ids, valid_tokens), dim=-1)
+        self.staged_input_ids = input_ids
         new_cur_len = input_ids.shape[-1]
         new_cache_size = new_cur_len - 1
         # # KV cache management is moved to the SpeculationScheduler class for unified handling
@@ -595,3 +597,6 @@ class CascadeCandidateVerifier(CandidateVerifier):
         #     outputs, self.verifier_kwargs, is_encoder_decoder=self.verifier_model.config.is_encoder_decoder
         # )
         return input_ids, new_logits, n_matches, num_valid_tokens, new_cache_size
+    
+    def update_generation_limit(self, new_limit):
+        self.generation_limit = new_limit
