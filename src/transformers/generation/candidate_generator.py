@@ -170,13 +170,15 @@ class AssistedCandidateGenerator(CandidateGenerator):
             assessed by the model and a `torch.FloatTensor` of shape `(batch_size, candidate_length,
             vocabulary_size)` containing the logits associated to each candidate.
         """
+        
         input_ids = input_ids.to(self.assistant_model.device)
-
         # Don't generate more than `max_length - 1` candidates since the target model generates one extra token.
         new_cur_len = input_ids.shape[-1]
         max_new_tokens = min(int(self.num_assistant_tokens), self.generation_config.max_length - new_cur_len - 1)
         min_new_tokens = max(min(max_new_tokens, self.main_model_min_length - new_cur_len), 0)
-        
+        # print(self.num_assistant_tokens)
+        # print(self.generation_config.max_length)
+        # print(new_cur_len)
         # changing == 0 to <= 0
         # can self.generation_config.max_length be less than new_cur_len + 1?
         # 
@@ -188,7 +190,7 @@ class AssistedCandidateGenerator(CandidateGenerator):
         
         # # not needed in staged speculation, kept for compatibility with the original assisted decoding
         has_past_key_values = self.assistant_kwargs.get("past_key_values", None) is not None
-        if has_past_key_values:
+        if has_past_key_values and (self.assistant_model.__class__.__name__!="MedusaModelLlama"):
             new_cache_size = new_cur_len - 1
             self.assistant_kwargs["past_key_values"] = _crop_past_key_values(
                 self.assistant_model, self.assistant_kwargs["past_key_values"], new_cache_size - 1
@@ -214,7 +216,7 @@ class AssistedCandidateGenerator(CandidateGenerator):
         self.assistant_kwargs["past_key_values"] = assistant_output.past_key_values
 
         # 4. Prepare variables for output
-        candidate_logits = torch.stack(assistant_output.scores, dim=1)
+        candidate_logits = None#torch.stack(assistant_output.scores, dim=1)
         candidate_ids = assistant_output.sequences
         return candidate_ids, candidate_logits
 

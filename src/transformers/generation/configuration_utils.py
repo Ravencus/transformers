@@ -60,7 +60,7 @@ class GenerationMode(ExplicitEnum):
     
     
     STAGED_SPECULATION = "staged_speculation" # 8803 staged feature
-
+    MEDUSA_DECODING="medusa_decoding" # 8803 staged feature
 
 class GenerationConfig(PushToHubMixin):
     # no-format
@@ -409,7 +409,7 @@ class GenerationConfig(PushToHubMixin):
     def __repr__(self):
         return f"{self.__class__.__name__} {self.to_json_string(ignore_metadata=True)}"
 
-    def get_generation_mode(self, assistant_model: Optional["PreTrainedModel"] = None, verifier_list: Optional[List["PreTrainedModel"]] = None) -> GenerationMode:
+    def get_generation_mode(self, assistant_model: Optional["PreTrainedModel"] = None, verifier_list: Optional[List["PreTrainedModel"]] = None, **gen_mode_kwargs) -> GenerationMode:
         """
         Returns the generation mode triggered by the [`GenerationConfig`] instance.
 
@@ -461,6 +461,9 @@ class GenerationConfig(PushToHubMixin):
         if verifier_list is not None:
             generation_mode = GenerationMode.STAGED_SPECULATION
             print("Staged Speculation Generation")
+
+        if gen_mode_kwargs["medusa_decoding"]==True:
+            generation_mode = GenerationMode.MEDUSA_DECODING
                 
         return generation_mode
 

@@ -93,6 +93,18 @@ from .stopping_criteria import (
     validate_stopping_criteria,
 )
 
+from ..medusa.utils import(
+    generate_medusa_buffers,
+    reset_medusa_mode,
+    initialize_medusa,
+    generate_candidates,
+    tree_decoding,
+    evaluate_posterior,
+    update_inference_inputs,
+)
+from ..medusa.kv_cache import initialize_past_key_values
+from ..medusa.medusa_choices import mc_sim_7b_63
+
 
 if TYPE_CHECKING:
     from ..modeling_utils import PreTrainedModel
@@ -1220,7 +1232,6 @@ class GenerationMixin:
         inputs_tensor,
     ):
         """Prepared max and min length in generaion configs to avoid clashes between similar attributes"""
-
         if generation_config.max_new_tokens is not None:
             if not has_default_max_length and generation_config.max_length is not None:
                 logger.warning(
@@ -1230,7 +1241,7 @@ class GenerationMixin:
                     "(https://huggingface.co/docs/transformers/main/en/main_classes/text_generation)"
                 )
             generation_config.max_length = generation_config.max_new_tokens + input_ids_length
-
+            
         # if both `inputs_embeds` and `input_ids` are passed, we do not correct the length
         # otherwise we need total length [inputs-embeds-len + new-tokens-len] to not go beyond indicated `max_length``
         elif (
@@ -1536,7 +1547,9 @@ class GenerationMixin:
         self._validate_generated_length(generation_config, input_ids_length, has_default_max_length)
 
         # 7. determine generation mode
-        generation_mode = generation_config.get_generation_mode(assistant_model, verifier_list)
+        gen_mode_kwargs={"medusa_decoding": self.__class__.__name__=="MedusaModelLlama"}
+        
+        generation_mode = generation_config.get_generation_mode(assistant_model, verifier_list,**gen_mode_kwargs)
 
         if streamer is not None and (generation_config.num_beams > 1):
             raise ValueError(
@@ -1631,6 +1644,7 @@ class GenerationMixin:
                 draft_model=assistant_model,
                 # do_sample=generation_config.do_sample,
                 verifier_list=verifier_list,
+                generation_config=generation_config,
                 logits_processor=prepared_logits_processor,
                 logits_warper=self._get_logits_warper(generation_config) if generation_config.do_sample else None,
                 stopping_criteria=prepared_stopping_criteria,
@@ -1643,7 +1657,130 @@ class GenerationMixin:
                 **model_kwargs,
             )
             
-                
+        if generation_mode == GenerationMode.MEDUSA_DECODING:
+            if batch_size > 1:
+                raise ValueError("Medusa decoding is only supported for batch_size = 1")
+            input_ids = input_ids.clone()
+            medusa_choices=mc_sim_7b_63
+            scores = ()
+            if hasattr(self, "medusa_choices") and self.medusa_choices == medusa_choices:
+            # Load the cached medusa buffer
+                medusa_buffers = self.medusa_buffers
+            else:
+                # Initialize the medusa buffer
+                medusa_buffers = generate_medusa_buffers(
+                    medusa_choices, device=self.base_model.device
+                )
+            self.medusa_buffers = medusa_buffers
+            self.medusa_choices = medusa_choices
+
+            if hasattr(self, "past_key_values"):
+                past_key_values = self.past_key_values
+                past_key_values_data = self.past_key_values_data
+                current_length_data = self.current_length_data
+                # Reset the past key and value states
+                current_length_data.zero_()
+            else:
+                print("initialize kv cache")
+                (
+                    past_key_values,
+                    past_key_values_data,
+                    current_length_data,
+                ) = initialize_past_key_values(self.base_model)
+                self.past_key_values = past_key_values
+                self.past_key_values_data = past_key_values_data
+                self.current_length_data = current_length_data
+            input_len = input_ids.shape[1]
+
+            reset_medusa_mode(self)
+            # Initialize tree attention mask and process prefill tokens
+            medusa_logits, logits = initialize_medusa(
+                input_ids, self, medusa_buffers["medusa_attn_mask"], past_key_values
+            )
+
+            new_token = 0
+            last_round_token = 0
+            if model_kwargs.get("temperature") is None:
+                temperature=0.0
+            else:
+                temperature=model_kwargs["temperature"]
+            if model_kwargs.get("posterior_threshold") is None:
+                posterior_threshold=0.09
+            else:
+                posterior_threshold=model_kwargs["posterior_threshold"]
+            if model_kwargs.get("posterior_alpha") is None:
+                posterior_alpha=0.3
+            else:
+                posterior_alpha=model_kwargs["posterior_alpha"]
+            if model_kwargs.get("top_p") is None:
+                top_p=0.8
+            else:
+                top_p=model_kwargs["top_p"]
+            if model_kwargs.get("sampling") is None:
+                sampling ='typical'
+            else:
+                sampling =model_kwargs["sampling"]
+            if model_kwargs.get("fast") is None:
+                fast =True
+            else:
+                fast =model_kwargs["fast"]
+
+            new_token_length=generation_config.max_length-input_ids.shape[1]
+            
+            #print(past_key_values[0][0].current_length)
+            #print(new_token_length)
+            for idx in range(new_token_length):
+                # Generate candidates with topk predictions from Medusa heads
+                candidates, tree_candidates = generate_candidates(
+                    medusa_logits,
+                    logits,
+                    medusa_buffers["tree_indices"],
+                    medusa_buffers["retrieve_indices"],
+                    temperature=temperature,
+                    posterior_alpha=posterior_alpha,
+                    posterior_threshold=posterior_threshold,
+                    top_p=top_p,
+                    sampling=sampling,
+                    fast=fast,
+                )
+
+                # Use tree attention to verify the candidates and get predictions
+                medusa_logits, logits, outputs = tree_decoding(
+                    self,
+                    tree_candidates,
+                    past_key_values,
+                    medusa_buffers["medusa_position_ids"],
+                    input_ids,
+                    medusa_buffers["retrieve_indices"],
+                )
+
+                # Evaluate the posterior of the candidates to select the accepted candidate prefix
+                best_candidate, accept_length = evaluate_posterior(
+                    logits, candidates, temperature, posterior_threshold, posterior_alpha, top_p=top_p, sampling=sampling, fast=fast
+                )
+
+                # Update the input_ids and logits
+                input_ids, logits, medusa_logits, new_token = update_inference_inputs(
+                    input_ids,
+                    candidates,
+                    best_candidate,
+                    accept_length,
+                    medusa_buffers["retrieve_indices"],
+                    outputs,
+                    logits,
+                    medusa_logits,
+                    new_token,
+                    past_key_values_data,
+                    current_length_data,
+                )
+                if self.tokenizer.eos_token_id in input_ids[0, input_len:]:
+                    break
+            #print(input_ids.shape[1])
+            result= GenerateDecoderOnlyOutput(
+                    sequences=input_ids,
+                    scores=None,
+                    past_key_values=None,
+                )        
             
         
         if generation_mode == GenerationMode.GREEDY_SEARCH:
@@ -4930,6 +5067,7 @@ class GenerationMixin:
     def _staged_assisted_decoding(
         self, # self is the last cascade model
         input_ids: torch.LongTensor,
+        generation_config: GenerationConfig,
         draft_model: Optional["PreTrainedModel"] = None,
         verifier_list: list["PreTrainedModel"] = None,
         do_sample: bool = False,
@@ -4954,12 +5092,7 @@ class GenerationMixin:
         stopping_criteria = stopping_criteria if stopping_criteria is not None else StoppingCriteriaList()
         pad_token_id = pad_token_id if pad_token_id is not None else self.generation_config.pad_token_id
         if eos_token_id is not None:
-            logger.warning_once(
-                "`eos_token_id` is deprecated in this function and will be removed in v4.41, use"
-                " `stopping_criteria=StoppingCriteriaList([EosTokenCriteria(eos_token_id=eos_token_id)])` instead."
-                " Otherwise make sure to set `model.generation_config.eos_token_id`",
-                FutureWarning,
-            )
+            
             stopping_criteria.append(EosTokenCriteria(eos_token_id=eos_token_id))
         else:
             # TODO remove when the method is totally private and beam scorer refactored
@@ -5004,7 +5137,7 @@ class GenerationMixin:
 
         scheduler = SpeculationScheduler(
             input_ids=input_ids,
-            generation_config=self.generation_config,
+            generation_config=generation_config,
             logits_processor=logits_processor,
             stopping_criteria=stopping_criteria,
             draft_model=draft_model,
