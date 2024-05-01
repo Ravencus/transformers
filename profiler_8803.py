@@ -59,7 +59,7 @@ if __name__ == "__main__":
     # raw_throughput = (outputs.numel()-inputs["input_ids"].numel())/duration
     
     start_time = time.time()
-    outputs_assisted = model.generate(**inputs, assistant_model=assistant_model_2, verifier_list=[assistant_model_1, model], max_new_tokens=100)
+    outputs_assisted = model.generate(**inputs, assistant_model=assistant_model_2, verifier_list=[assistant_model_1, model], max_new_tokens=500)
     # outputs = model.generate(**inputs, assistant_model=assistant_model_2, verifier_list=[model])
     # outputs = model.generate(**inputs, assistant_model=assistant_model)
     duration = time.time() - start_time

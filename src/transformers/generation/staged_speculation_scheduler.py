@@ -99,6 +99,10 @@ class SpeculationScheduler:
             candidate_input_ids, candidate_logits = self._generate_candidates()
 
             is_done_candidate = self.stopping_criteria(candidate_input_ids, None)
+            # if candidate generation is done, we should update the generation limits to 1 for all verifiers
+            for verifier in self.verifier_list:
+                verifier.generation_limit = 1.0
+                
             num_generated_candidates = candidate_input_ids.shape[1] - self.staged_input_ids.shape[1]
 
             logger.info(f"gen_tokens: {num_generated_candidates}")

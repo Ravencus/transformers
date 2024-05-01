@@ -172,6 +172,7 @@ class AssistedCandidateGenerator(CandidateGenerator):
         input_ids = input_ids.to(self.assistant_model.device)
 
         # Don't generate more than `max_length - 1` candidates since the target model generates one extra token.
+
         new_cur_len = input_ids.shape[-1]
         max_new_tokens = min(int(self.num_assistant_tokens), self.generation_config.max_length - new_cur_len - 1)
         min_new_tokens = max(min(max_new_tokens, self.main_model_min_length - new_cur_len), 0)
@@ -582,7 +583,7 @@ class CascadeCandidateVerifier(CandidateVerifier):
         selected_tokens = new_logits.argmax(dim=-1)
         candidate_new_tokens = candidate_input_ids[:, cur_len:]
         n_matches = ((~(candidate_new_tokens == selected_tokens[:, :-1])).cumsum(dim=-1) < 1).sum()
-        if is_done_candidate and n_matches == candidate_length:
+        if is_done_candidate and n_matches == candidate_length and n_matches > 0: # >0 to avoid the case when candidate length is 0
             n_matches -= 1
         valid_tokens = selected_tokens[:, : n_matches + 1]
         num_valid_tokens = valid_tokens.shape[-1]
